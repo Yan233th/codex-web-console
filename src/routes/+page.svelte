@@ -47,6 +47,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let newPrompt = $state('');
 	let replyPrompt = $state('');
 	let providerFilter = $state('all');
+	let sidebarCollapsed = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let loadingThread = $state(false);
 	let submitting = $state(false);
@@ -421,17 +422,25 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		/>
 	</div>
 {:else}
-	<div class="app-shell">
+	<div class:sidebar-collapsed={sidebarCollapsed} class="app-shell">
 		<aside class="sidebar">
 			<div class="brand">
 				<div>
 					<p class="eyebrow">Codex Web Console</p>
 					<h1>Local</h1>
 				</div>
-
-				<form method="POST" action="?/logout" use:enhance={enhanceRedirect}>
-					<button type="submit" class="ghost">Log out</button>
-				</form>
+				<div class="brand-actions">
+					<button
+						type="button"
+						class="ghost icon-button"
+						onclick={() => {
+							sidebarCollapsed = true;
+						}}
+						aria-label="Collapse sidebar"
+					>
+						<span aria-hidden="true">←</span>
+					</button>
+				</div>
 			</div>
 
 			<label class="field sidebar-filter">
@@ -455,6 +464,44 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		</aside>
 
 		<main class="main">
+			<div class="main-fab-row">
+				{#if sidebarCollapsed}
+					<button
+						type="button"
+						class="ghost icon-button sidebar-toggle"
+						onclick={() => {
+							sidebarCollapsed = false;
+						}}
+						aria-label="Expand sidebar"
+					>
+						<span aria-hidden="true">→</span>
+					</button>
+				{/if}
+
+				<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
+					<button type="submit" class="ghost icon-button topbar-button" aria-label="Log out" title="Log out">
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path
+								d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+							<path
+								d="M11 6.25 15 10l-4 3.75M15 10H7.5"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+						</svg>
+					</button>
+				</form>
+			</div>
+
 			<section class="composer-card composer-compact">
 				<div class="composer-header">
 					<div>
@@ -493,13 +540,16 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				</div>
 			</section>
 
-			<section class="detail-card">
+			<section class="detail-card detail-layout">
 				<div class="detail-header">
 					<div>
 						<p class="eyebrow">Thread</p>
 						<h2>{selectedSummary?.title ?? 'Nothing selected'}</h2>
 						{#if selectedSummary}
 							<p class="copy">{selectedSummary.cwd}</p>
+							{#if selectedSummary.provider}
+								<p class="detail-provider">{selectedSummary.provider}</p>
+							{/if}
 						{/if}
 					</div>
 				</div>
@@ -511,7 +561,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{#if loadingThread}
 					<p class="copy">Loading thread…</p>
 				{:else}
-					<Timeline turns={visibleSelectedThread?.turns ?? []} liveEntries={liveEntryList} {approvals} />
+					<div class="detail-body">
+						<Timeline turns={visibleSelectedThread?.turns ?? []} liveEntries={liveEntryList} {approvals} />
+					</div>
 
 					{#if approvals.length > 0}
 						<div class="approval-actions">
@@ -541,7 +593,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{/if}
 
 				{#if visibleSelectedThread}
-					<div class="reply-box">
+					<div class="reply-box composer-surface">
 						<label class="field">
 							<span>Reply</span>
 							<textarea
