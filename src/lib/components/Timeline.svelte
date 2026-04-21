@@ -1,0 +1,213 @@
+<script lang="ts">
+	import { renderMarkdown } from '$lib/render-markdown';
+	import type { ApprovalRequest, TimelineEntry, TimelineTurn } from '$lib/types';
+
+	let {
+		turns,
+		liveEntries,
+		approvals
+	}: {
+		turns: TimelineTurn[];
+		liveEntries: TimelineEntry[];
+		approvals: ApprovalRequest[];
+	} = $props();
+
+	function isCollapsed(entry: TimelineEntry): boolean {
+		if (entry.kind !== 'command') {
+			return false;
+		}
+
+		const length = (entry.output ?? '').length;
+		const lines = (entry.output ?? '').split('\n').length;
+		return length > 500 || lines > 12;
+	}
+
+	function renderEntry(entry: TimelineEntry) {
+		if (entry.kind === 'command') {
+			return 'command';
+		}
+
+		if (entry.kind === 'reasoning') {
+			return 'reasoning';
+		}
+
+		if (entry.kind === 'web_search') {
+			return 'web_search';
+		}
+
+		return 'default';
+	}
+</script>
+
+<section class="timeline">
+	{#if turns.length === 0 && liveEntries.length === 0}
+		<p class="empty">Start a thread to see activity.</p>
+	{/if}
+
+	{#each turns as turn (turn.id)}
+		<section class="turn">
+			<div class="turn-meta">
+				<span>Turn</span>
+				<strong>{turn.status}</strong>
+			</div>
+
+			{#each turn.entries as entry (entry.id)}
+				<article class={`entry entry-${entry.kind}`}>
+					<header>{entry.label}</header>
+
+					{#if renderEntry(entry) === 'command'}
+						<details class="command-block" open={!isCollapsed(entry)}>
+							<summary>
+								<span>{entry.command || 'Command'}</span>
+								{#if entry.exitCode !== null && entry.exitCode !== undefined}
+									<small>exit {entry.exitCode}</small>
+								{/if}
+							</summary>
+
+							{#if entry.cwd}
+								<p class="meta-line">{entry.cwd}</p>
+							{/if}
+
+							{#if entry.command}
+								<pre>{entry.command}</pre>
+							{/if}
+
+							{#if entry.output}
+								<pre>{entry.output}</pre>
+							{/if}
+						</details>
+					{:else if renderEntry(entry) === 'reasoning'}
+						<details class="info-block" open>
+							<summary>{entry.text || 'Reasoning'}</summary>
+							{#if entry.text}
+								<div class="markdown" data-kind={entry.kind}>
+									{@html renderMarkdown(entry.text)}
+								</div>
+							{/if}
+						</details>
+					{:else if renderEntry(entry) === 'web_search'}
+						<details class="info-block" open>
+							<summary>{entry.query || 'Web search'}</summary>
+							<div class="search-meta">
+								{#if entry.actionType}
+									<p class="meta-line">Action: {entry.actionType}</p>
+								{/if}
+								{#if entry.url}
+									<p class="meta-line">{entry.url}</p>
+								{/if}
+								{#if entry.pattern}
+									<p class="meta-line">Pattern: {entry.pattern}</p>
+								{/if}
+								{#if entry.queries && entry.queries.length > 0}
+									<ul class="search-queries">
+										{#each entry.queries as query}
+											<li>{query}</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+						</details>
+					{:else}
+						{#if entry.text}
+							<div class="markdown" data-kind={entry.kind}>
+								{@html renderMarkdown(entry.text)}
+							</div>
+						{/if}
+					{/if}
+
+					{#if entry.changes}
+						<ul class="changes">
+							{#each entry.changes as change}
+								<li>{change.kind} {change.path}</li>
+							{/each}
+						</ul>
+					{/if}
+				</article>
+			{/each}
+		</section>
+	{/each}
+
+	{#if liveEntries.length > 0}
+		<section class="turn turn-live">
+			<div class="turn-meta">
+				<span>Live</span>
+				<strong>running</strong>
+			</div>
+
+			{#each liveEntries as entry (entry.id)}
+				<article class={`entry entry-${entry.kind}`}>
+					<header>{entry.label}</header>
+
+					{#if renderEntry(entry) === 'command'}
+						<details class="command-block" open={!isCollapsed(entry)}>
+							<summary>
+								<span>{entry.command || 'Command'}</span>
+							</summary>
+							{#if entry.cwd}
+								<p class="meta-line">{entry.cwd}</p>
+							{/if}
+							{#if entry.command}
+								<pre>{entry.command}</pre>
+							{/if}
+							{#if entry.output}
+								<pre>{entry.output}</pre>
+							{/if}
+						</details>
+					{:else if renderEntry(entry) === 'reasoning'}
+						<details class="info-block" open>
+							<summary>{entry.text || 'Reasoning'}</summary>
+							{#if entry.text}
+								<div class="markdown" data-kind={entry.kind}>
+									{@html renderMarkdown(entry.text)}
+								</div>
+							{/if}
+						</details>
+					{:else if renderEntry(entry) === 'web_search'}
+						<details class="info-block" open>
+							<summary>{entry.query || 'Web search'}</summary>
+							<div class="search-meta">
+								{#if entry.actionType}
+									<p class="meta-line">Action: {entry.actionType}</p>
+								{/if}
+								{#if entry.url}
+									<p class="meta-line">{entry.url}</p>
+								{/if}
+								{#if entry.pattern}
+									<p class="meta-line">Pattern: {entry.pattern}</p>
+								{/if}
+								{#if entry.queries && entry.queries.length > 0}
+									<ul class="search-queries">
+										{#each entry.queries as query}
+											<li>{query}</li>
+										{/each}
+									</ul>
+								{/if}
+							</div>
+						</details>
+					{:else if entry.text}
+						<div class="markdown" data-kind={entry.kind}>
+							{@html renderMarkdown(entry.text)}
+						</div>
+					{/if}
+				</article>
+			{/each}
+		</section>
+	{/if}
+
+	{#if approvals.length > 0}
+		<section class="approval-stack">
+			{#each approvals as approval (approval.requestId)}
+				<article class="approval-card">
+					<p class="eyebrow">Approval</p>
+					<h3>{approval.title}</h3>
+					{#if approval.reason}
+						<p>{approval.reason}</p>
+					{/if}
+					{#if approval.command}
+						<pre>{approval.command}</pre>
+					{/if}
+				</article>
+			{/each}
+		</section>
+	{/if}
+</section>
