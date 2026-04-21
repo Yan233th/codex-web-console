@@ -12,16 +12,6 @@
 		approvals: ApprovalRequest[];
 	} = $props();
 
-	function isCollapsed(entry: TimelineEntry): boolean {
-		if (entry.kind !== 'command') {
-			return false;
-		}
-
-		const length = (entry.output ?? '').length;
-		const lines = (entry.output ?? '').split('\n').length;
-		return length > 500 || lines > 12;
-	}
-
 	function renderEntry(entry: TimelineEntry) {
 		if (entry.kind === 'command') {
 			return 'command';
@@ -56,7 +46,7 @@
 					<header>{entry.label}</header>
 
 					{#if renderEntry(entry) === 'command'}
-						<details class="command-block" open={!isCollapsed(entry)}>
+						<details class="command-block">
 							<summary>
 								<span>{entry.command || 'Command'}</span>
 								{#if entry.exitCode !== null && entry.exitCode !== undefined}
@@ -86,7 +76,7 @@
 							{/if}
 						</details>
 					{:else if renderEntry(entry) === 'web_search'}
-						<details class="info-block" open>
+						<details class="info-block">
 							<summary>{entry.query || 'Web search'}</summary>
 							<div class="search-meta">
 								{#if entry.actionType}
@@ -139,7 +129,7 @@
 					<header>{entry.label}</header>
 
 					{#if renderEntry(entry) === 'command'}
-						<details class="command-block" open={!isCollapsed(entry)}>
+						<details class="command-block">
 							<summary>
 								<span>{entry.command || 'Command'}</span>
 							</summary>
@@ -163,7 +153,7 @@
 							{/if}
 						</details>
 					{:else if renderEntry(entry) === 'web_search'}
-						<details class="info-block" open>
+						<details class="info-block">
 							<summary>{entry.query || 'Web search'}</summary>
 							<div class="search-meta">
 								{#if entry.actionType}
