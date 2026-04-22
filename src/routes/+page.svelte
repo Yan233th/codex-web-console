@@ -697,7 +697,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				<div class="detail-header">
 					<div>
 						<p class="eyebrow">{showingDraftThread ? 'New thread' : 'Thread'}</p>
-						<h2>
+						<h2
+							class="detail-title"
+							title={showingDraftThread
+								? 'Start a conversation'
+								: (selectedSummary?.title ?? 'Nothing selected')}
+						>
 							{showingDraftThread
 								? 'Start a conversation'
 								: (selectedSummary?.title ?? 'Nothing selected')}

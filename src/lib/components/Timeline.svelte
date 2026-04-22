@@ -50,22 +50,22 @@
 					{#if renderEntry(entry) === 'command'}
 						<details class="command-block">
 							<summary>
-								<span>{entry.command || 'Command'}</span>
+								<span class="command-summary-label" title={entry.command || 'Command'}>
+									{entry.command || 'Command'}
+								</span>
 								{#if entry.exitCode !== null && entry.exitCode !== undefined}
 									<small>exit {entry.exitCode}</small>
 								{/if}
 							</summary>
 
 							{#if entry.cwd}
-								<p class="meta-line">{entry.cwd}</p>
-							{/if}
-
-							{#if entry.command}
-								<pre>{entry.command}</pre>
+								<pre class="command-code">{entry.cwd}{entry.command ? `\n$ ${entry.command}` : ''}</pre>
+							{:else if entry.command}
+								<pre class="command-code">$ {entry.command}</pre>
 							{/if}
 
 							{#if entry.output}
-								<pre>{entry.output}</pre>
+								<pre class="command-code command-output">{entry.output}</pre>
 							{/if}
 						</details>
 					{:else if renderEntry(entry) === 'reasoning'}
@@ -133,16 +133,17 @@
 					{#if renderEntry(entry) === 'command'}
 						<details class="command-block">
 							<summary>
-								<span>{entry.command || 'Command'}</span>
+								<span class="command-summary-label" title={entry.command || 'Command'}>
+									{entry.command || 'Command'}
+								</span>
 							</summary>
 							{#if entry.cwd}
-								<p class="meta-line">{entry.cwd}</p>
-							{/if}
-							{#if entry.command}
-								<pre>{entry.command}</pre>
+								<pre class="command-code">{entry.cwd}{entry.command ? `\n$ ${entry.command}` : ''}</pre>
+							{:else if entry.command}
+								<pre class="command-code">$ {entry.command}</pre>
 							{/if}
 							{#if entry.output}
-								<pre>{entry.output}</pre>
+								<pre class="command-code command-output">{entry.output}</pre>
 							{/if}
 						</details>
 					{:else if renderEntry(entry) === 'reasoning'}

@@ -440,6 +440,22 @@ button.danger {
 	border-bottom: 1px solid rgba(15, 23, 42, 0.08);
 }
 
+.detail-header > div:first-child {
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.detail-title {
+	margin: 0;
+	width: 100%;
+	max-width: 100%;
+	display: -webkit-box;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 5;
+	overflow: hidden;
+	overflow-wrap: anywhere;
+}
+
 .detail-body {
 	min-height: auto;
 	overflow: visible;
@@ -571,6 +587,36 @@ button.danger {
 	gap: 10px;
 }
 
+.command-code {
+	display: block;
+	margin: 0;
+	padding: 10px 12px;
+	border-radius: 12px;
+	background: #eef3f8;
+	border: 1px solid rgba(15, 23, 42, 0.08);
+	font-family:
+		ui-monospace,
+		'SFMono-Regular',
+		'SF Mono',
+		'JetBrains Mono',
+		'Menlo',
+		'Consolas',
+		monospace;
+	font-size: 12px;
+	line-height: 1.55;
+	color: #243042;
+}
+
+.command-code {
+	white-space: pre-wrap;
+	word-break: break-word;
+	overflow-x: auto;
+}
+
+.command-output {
+	background: #e9eef5;
+}
+
 .info-block {
 	display: grid;
 	gap: 10px;
@@ -581,6 +627,7 @@ button.danger {
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
+	min-width: 0;
 	cursor: pointer;
 	font-weight: 700;
 	list-style: none;
@@ -596,7 +643,21 @@ button.danger {
 }
 
 .command-block summary span {
-	overflow-wrap: anywhere;
+	min-width: 0;
+	flex: 1 1 auto;
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	line-height: 1.45;
+}
+
+.command-summary-label {
+	min-width: 0;
+}
+
+.command-block summary small {
+	flex: 0 0 auto;
 }
 
 .meta-line {
