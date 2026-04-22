@@ -66,8 +66,6 @@ pre {
 }
 
 .login-card,
-.composer-card,
-.detail-card,
 .browser-panel {
 	border: 1px solid var(--line);
 	border-radius: var(--radius);
@@ -194,7 +192,7 @@ button.danger {
 	background: var(--panel);
 	box-shadow: var(--shadow);
 	display: grid;
-	grid-template-rows: auto auto minmax(0, 1fr);
+	grid-template-rows: auto auto auto minmax(0, 1fr);
 	gap: 12px;
 	overflow: hidden;
 	transition:
@@ -215,6 +213,11 @@ button.danger {
 
 .sidebar-filter {
 	margin: 0;
+}
+
+.sidebar-primary-action {
+	width: 100%;
+	justify-content: center;
 }
 
 .brand,
@@ -249,7 +252,7 @@ button.danger {
 
 .main {
 	display: grid;
-	grid-template-rows: auto auto;
+	grid-template-rows: auto;
 	gap: 12px;
 	min-width: 0;
 	min-height: 0;
@@ -258,33 +261,6 @@ button.danger {
 	justify-items: center;
 	align-content: start;
 	padding-right: 6px;
-}
-
-.composer-card,
-.detail-card {
-	padding: 14px;
-}
-
-.composer-compact {
-	display: grid;
-	gap: 12px;
-	width: min(100%, calc(var(--chat-max-width) + 5rem));
-}
-
-.composer-grid {
-	display: grid;
-	grid-template-columns: minmax(220px, 290px) minmax(0, 1fr) auto;
-	gap: 10px;
-	align-items: end;
-}
-
-.composer-prompt {
-	min-width: 0;
-}
-
-.composer-actions {
-	display: flex;
-	align-items: end;
 }
 
 .logout-form {
@@ -470,6 +446,30 @@ button.danger {
 	padding: 14px 6px 0 0;
 	display: grid;
 	justify-items: center;
+}
+
+.compose-view {
+	padding-right: 0;
+}
+
+.compose-panel {
+	width: 100%;
+	max-width: var(--chat-max-width);
+	display: grid;
+	gap: 16px;
+}
+
+.composer-prompt {
+	min-width: 0;
+}
+
+.compose-actions {
+	display: flex;
+	justify-content: flex-start;
+}
+
+.workspace-error {
+	margin: 4px 0 0;
 }
 
 .turn {
@@ -690,10 +690,6 @@ button.danger {
 		overflow: visible;
 	}
 
-	.composer-grid {
-		grid-template-columns: 1fr;
-	}
-
 	.sidebar {
 		order: 2;
 		min-height: auto;
@@ -708,7 +704,7 @@ button.danger {
 	}
 
 	.main {
-		grid-template-rows: auto auto;
+		grid-template-rows: auto;
 		overflow: visible;
 	}
 

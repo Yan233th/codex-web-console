@@ -5,10 +5,12 @@
 	let {
 		turns,
 		liveEntries,
+		preservedEntries = [],
 		approvals
 	}: {
 		turns: TimelineTurn[];
 		liveEntries: TimelineEntry[];
+		preservedEntries?: TimelineEntry[];
 		approvals: ApprovalRequest[];
 	} = $props();
 
@@ -30,7 +32,7 @@
 </script>
 
 <section class="timeline">
-	{#if turns.length === 0 && liveEntries.length === 0}
+	{#if turns.length === 0 && liveEntries.length === 0 && preservedEntries.length === 0}
 		<p class="empty">Start a thread to see activity.</p>
 	{/if}
 
@@ -179,6 +181,29 @@
 							{@html renderMarkdown(entry.text)}
 						</div>
 					{/if}
+				</article>
+			{/each}
+		</section>
+	{/if}
+
+	{#if preservedEntries.length > 0}
+		<section class="turn turn-preserved">
+			<div class="turn-meta">
+				<span>Reasoning</span>
+				<strong>session</strong>
+			</div>
+
+			{#each preservedEntries as entry (entry.id)}
+				<article class={`entry entry-${entry.kind}`}>
+					<header>{entry.label}</header>
+					<details class="info-block" open>
+						<summary>{entry.text || 'Reasoning'}</summary>
+						{#if entry.text}
+							<div class="markdown" data-kind={entry.kind}>
+								{@html renderMarkdown(entry.text)}
+							</div>
+						{/if}
+					</details>
 				</article>
 			{/each}
 		</section>

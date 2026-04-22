@@ -118,20 +118,23 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				text: readString(item.text) ?? '',
 				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null
 			};
-		case 'reasoning':
+		case 'reasoning': {
+			const reasoningText = [
+				...(Array.isArray(item.summary)
+					? item.summary.filter((value): value is string => typeof value === 'string')
+					: []),
+				...(Array.isArray(item.content)
+					? item.content.filter((value): value is string => typeof value === 'string')
+					: [])
+			].join('\n');
+
 			return {
 				id: item.id,
 				kind: 'reasoning',
 				label: 'Reasoning',
-				text: [
-					...(Array.isArray(item.summary)
-						? item.summary.filter((value): value is string => typeof value === 'string')
-						: []),
-					...(Array.isArray(item.content)
-						? item.content.filter((value): value is string => typeof value === 'string')
-						: [])
-				].join('\n') || 'Reasoning captured by Codex.'
+				text: reasoningText
 			};
+		}
 		case 'webSearch': {
 			const action = asRecord(item.action);
 			const queries = Array.isArray(action?.queries)

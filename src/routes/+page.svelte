@@ -1,6 +1,7 @@
 <script lang="ts">
 import { enhance } from '$app/forms';
 import { goto } from '$app/navigation';
+import { tick } from 'svelte';
 import type { SubmitFunction } from '@sveltejs/kit';
 
 	import LoginView from '$lib/components/LoginView.svelte';
@@ -40,6 +41,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let selectedThreadId = $state<string | null>(null);
 	let selectedThread = $state<ThreadDetail | null>(null);
 	let liveEntries = $state<Record<string, TimelineEntry>>({});
+	let runtimeReasoning = $state<Record<string, TimelineEntry[]>>({});
 	let approvals = $state<ApprovalRequest[]>([]);
 	let browserOpen = $state(false);
 	let listing = $state<DirectoryListing | null>(null);
@@ -48,7 +50,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let replyPrompt = $state('');
 	let providerFilter = $state('all');
 	let sidebarCollapsed = $state(false);
+	let draftingThread = $state(false);
 	let errorMessage = $state<string | null>(null);
+	let bootErrorMessage = $state<string | null>(null);
 	let loadingThread = $state(false);
 	let submitting = $state(false);
 	let source: EventSource | null = null;
@@ -83,6 +87,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 		return visibleThreads[0]?.id ?? null;
 	});
+	const runtimeReasoningList = $derived(
+		visibleSelectedThreadId ? (runtimeReasoning[visibleSelectedThreadId] ?? []) : []
+	);
 	const visibleSelectedThread = $derived.by(() => {
 		if (selectedThread?.thread.id === visibleSelectedThreadId) {
 			return selectedThread;
@@ -97,9 +104,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const visibleWorkspacePath = $derived(
 		workspacePath || data.selectedThread?.thread.cwd || String(data.homePath)
 	);
-	const visibleErrorMessage = $derived(
-		errorMessage ?? (data.codexError ? String(data.codexError) : null)
-	);
+	const visibleErrorMessage = $derived(errorMessage ?? bootErrorMessage);
+	const showingDraftThread = $derived(draftingThread || (!visibleSelectedThread && !loadingThread));
 	const selectedSummary = $derived(
 		visibleThreads.find((thread) => thread.id === visibleSelectedThreadId) ?? null
 	);
@@ -147,9 +153,35 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			[itemId]: {
 				...base,
 				...patch,
-				text: patch.text ?? base.text ?? '',
+				text:
+					(base.kind === 'reasoning' || patch.kind === 'reasoning') && base.text && !patch.text
+						? base.text
+						: (patch.text ?? base.text ?? ''),
 				output: patch.output ?? base.output ?? ''
 			}
+		};
+	}
+
+	function rememberRuntimeReasoning(threadId: string): void {
+		const entries = Object.values(liveEntries).filter(
+			(entry) => entry.kind === 'reasoning' && entry.text?.trim()
+		);
+
+		if (entries.length === 0) {
+			return;
+		}
+
+		const merged = new Map(
+			(runtimeReasoning[threadId] ?? []).map((entry) => [entry.id, entry] as const)
+		);
+
+		for (const entry of entries) {
+			merged.set(entry.id, entry);
+		}
+
+		runtimeReasoning = {
+			...runtimeReasoning,
+			[threadId]: [...merged.values()]
 		};
 	}
 
@@ -168,30 +200,105 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		selectedThreadId = data.selectedThread?.thread.id ?? data.threads[0]?.id ?? null;
 		approvals = data.selectedThread?.approvals ?? [];
 		workspacePath = data.selectedThread?.thread.cwd ?? String(data.homePath);
-		errorMessage = data.codexError ? String(data.codexError) : null;
+		draftingThread = data.threads.length === 0;
+		bootErrorMessage = data.codexError ? String(data.codexError) : null;
 	});
 
 	async function loadThreads(): Promise<void> {
 		const payload = await readJson<{ threads: ThreadSummary[] }>(await fetch('/api/threads'));
+		bootErrorMessage = null;
 		threads = payload.threads;
 		if (!selectedThreadId && threads[0]) {
 			selectedThreadId = threads[0].id;
 		}
 	}
 
-	async function loadThread(threadId: string): Promise<void> {
-		loadingThread = true;
+	type ScrollSnapshot =
+		| {
+				mode: 'window';
+				top: number;
+				stickToBottom: boolean;
+		  }
+		| {
+				mode: 'element';
+				top: number;
+				stickToBottom: boolean;
+		  };
+
+	function captureScrollSnapshot(): ScrollSnapshot | null {
+		if (!mainScroller) {
+			return null;
+		}
+
+		if (getComputedStyle(mainScroller).overflowY === 'visible') {
+			const top = window.scrollY;
+			const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+			return {
+				mode: 'window',
+				top,
+				stickToBottom: maxTop - top < 80
+			};
+		}
+
+		const top = mainScroller.scrollTop;
+		const maxTop = Math.max(0, mainScroller.scrollHeight - mainScroller.clientHeight);
+		return {
+			mode: 'element',
+			top,
+			stickToBottom: maxTop - top < 80
+		};
+	}
+
+	function restoreScrollSnapshot(snapshot: ScrollSnapshot | null): void {
+		if (!snapshot || !mainScroller) {
+			return;
+		}
+
+		if (snapshot.mode === 'window') {
+			window.scrollTo({
+				top: snapshot.stickToBottom ? document.documentElement.scrollHeight : snapshot.top
+			});
+			return;
+		}
+
+		mainScroller.scrollTo({
+			top: snapshot.stickToBottom ? mainScroller.scrollHeight : snapshot.top
+		});
+	}
+
+	async function loadThread(
+		threadId: string,
+		options: { silent?: boolean } = {}
+	): Promise<void> {
+		const silent = options.silent ?? false;
+		const snapshot = silent ? captureScrollSnapshot() : null;
+
+		if (!silent) {
+			loadingThread = true;
+		} else {
+			rememberRuntimeReasoning(threadId);
+		}
+
 		try {
 			const payload = await readJson<{ detail: ThreadDetail }>(
 				await fetch(`/api/threads/${threadId}`)
 			);
+			bootErrorMessage = null;
+			errorMessage = null;
 			selectedThread = payload.detail;
 			approvals = payload.detail.approvals;
 			liveEntries = {};
+
+			if (silent) {
+				await tick();
+				restoreScrollSnapshot(snapshot);
+			}
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
-			loadingThread = false;
+			if (!silent) {
+				loadingThread = false;
+			}
 		}
 	}
 
@@ -223,7 +330,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					})
 				})
 			);
+			bootErrorMessage = null;
 			newPrompt = '';
+			draftingThread = false;
 			await loadThreads();
 			selectedThreadId = payload.thread.id;
 			await loadThread(payload.thread.id);
@@ -253,12 +362,23 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					})
 				})
 			);
+			bootErrorMessage = null;
 			replyPrompt = '';
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
 			submitting = false;
 		}
+	}
+
+	function startDraftThread(): void {
+		draftingThread = true;
+		errorMessage = null;
+		liveEntries = {};
+		approvals = [];
+		newPrompt = '';
+		replyPrompt = '';
+		workspacePath = visibleSelectedThread?.thread.cwd ?? String(data.homePath);
 	}
 
 	async function resolveApproval(
@@ -272,6 +392,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				body: JSON.stringify({ decision })
 			})
 		);
+		bootErrorMessage = null;
 	}
 
 	function submitOnEnter(event: KeyboardEvent, submit: () => void): void {
@@ -323,7 +444,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (event.type === 'turn.completed') {
 			void loadThreads();
 			if (event.threadId === selectedThreadId) {
-				void loadThread(event.threadId);
+				void loadThread(event.threadId, { silent: true });
 			}
 			return;
 		}
@@ -424,6 +545,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			selectedThread = null;
 			approvals = [];
 			liveEntries = {};
+			draftingThread = true;
 			return;
 		}
 
@@ -473,6 +595,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				</div>
 			</div>
 
+			<button type="button" class="sidebar-primary-action" onclick={startDraftThread}>
+				New thread
+			</button>
+
 			<label class="field sidebar-filter">
 				<span>Provider</span>
 				<select bind:value={providerFilter}>
@@ -486,8 +612,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 			<ThreadList
 				threads={visibleThreads}
-				selectedThreadId={visibleSelectedThreadId}
+				selectedThreadId={draftingThread ? null : visibleSelectedThreadId}
 				onSelect={(threadId) => {
+					draftingThread = false;
 					selectedThreadId = threadId;
 				}}
 			/>
@@ -517,67 +644,73 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		{/if}
 
 		<main bind:this={mainScroller} class="main">
-			<section class="composer-card composer-compact">
-				<div class="composer-header">
-					<div>
-						<p class="eyebrow">New thread</p>
-						<h2>Start in one step</h2>
-					</div>
-					<button
-						type="button"
-						class="ghost"
-						onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}
-					>
-						Browse
-					</button>
-				</div>
-
-				<div class="composer-grid">
-					<label class="field">
-						<span>Workspace</span>
-						<input bind:value={workspacePath} spellcheck="false" />
-					</label>
-
-					<label class="field composer-prompt">
-						<span>Prompt</span>
-						<textarea
-							bind:value={newPrompt}
-							rows="3"
-							onkeydown={(event) => submitOnEnter(event, () => void createThread())}
-						></textarea>
-					</label>
-
-					<div class="composer-actions">
-						<button type="button" onclick={() => void createThread()} disabled={submitting}>
-							Start thread
-						</button>
-					</div>
-				</div>
-			</section>
-
 			<section class="thread-workspace detail-layout">
 				<div class="detail-header">
 					<div>
-						<p class="eyebrow">Thread</p>
-						<h2>{selectedSummary?.title ?? 'Nothing selected'}</h2>
-						{#if selectedSummary}
+						<p class="eyebrow">{showingDraftThread ? 'New thread' : 'Thread'}</p>
+						<h2>
+							{showingDraftThread
+								? 'Start a conversation'
+								: (selectedSummary?.title ?? 'Nothing selected')}
+						</h2>
+						{#if !showingDraftThread && selectedSummary}
 							<p class="copy">{selectedSummary.cwd}</p>
 							{#if selectedSummary.provider}
 								<p class="detail-provider">{selectedSummary.provider}</p>
 							{/if}
+						{:else if showingDraftThread}
+							<p class="copy">Pick a workspace, write the first message, and start here.</p>
 						{/if}
 					</div>
+					{#if showingDraftThread}
+						<button
+							type="button"
+							class="ghost"
+							onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}
+						>
+							Browse
+						</button>
+					{/if}
 				</div>
 
-				{#if visibleErrorMessage}
-					<p class="error">{visibleErrorMessage}</p>
-				{/if}
+				{#if showingDraftThread}
+					<div class="detail-body compose-view">
+						<div class="compose-panel">
+							<label class="field">
+								<span>Workspace</span>
+								<input bind:value={workspacePath} spellcheck="false" />
+							</label>
 
-				{#if loadingThread}
+							<label class="field composer-prompt">
+								<span>Message</span>
+								<textarea
+									bind:value={newPrompt}
+									rows="8"
+									onkeydown={(event) => submitOnEnter(event, () => void createThread())}
+								></textarea>
+							</label>
+
+							<div class="compose-actions">
+								<button type="button" onclick={() => void createThread()} disabled={submitting}>
+									Start thread
+								</button>
+							</div>
+
+							{#if visibleErrorMessage}
+								<p class="error workspace-error">{visibleErrorMessage}</p>
+							{/if}
+						</div>
+					</div>
+				{:else if loadingThread}
 					<p class="copy">Loading thread…</p>
 				{:else}
 					<div class="detail-body">
-						<Timeline turns={visibleSelectedThread?.turns ?? []} liveEntries={liveEntryList} {approvals} />
+						<Timeline
+							turns={visibleSelectedThread?.turns ?? []}
+							liveEntries={liveEntryList}
+							preservedEntries={runtimeReasoningList}
+							{approvals}
+						/>
 					</div>
 
 					{#if approvals.length > 0}
@@ -607,8 +740,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					{/if}
 				{/if}
 
-				{#if visibleSelectedThread}
+				{#if !showingDraftThread && visibleSelectedThread}
 					<div class="reply-box composer-surface">
+						{#if visibleErrorMessage}
+							<p class="error workspace-error">{visibleErrorMessage}</p>
+						{/if}
 						<label class="field">
 							<span>Reply</span>
 							<textarea
