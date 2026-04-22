@@ -288,6 +288,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 
+		if (getComputedStyle(mainScroller).overflowY === 'visible') {
+			window.scrollTo({
+				top: position === 'top' ? 0 : document.documentElement.scrollHeight,
+				behavior: 'smooth'
+			});
+			return;
+		}
+
 		mainScroller.scrollTo({
 			top: position === 'top' ? 0 : mainScroller.scrollHeight,
 			behavior: 'smooth'
@@ -444,13 +452,23 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				<div class="brand-actions">
 					<button
 						type="button"
-						class="ghost icon-button"
+						class="ghost floating-button sidebar-toggle-button"
 						onclick={() => {
 							sidebarCollapsed = true;
 						}}
 						aria-label="Collapse sidebar"
+						title="Collapse sidebar"
 					>
-						<span aria-hidden="true">←</span>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path
+								d="M4.5 4.5h11v11h-11zM12 4.5v11M9 7.25 6.25 10 9 12.75"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.6"
+							/>
+						</svg>
 					</button>
 				</div>
 			</div>
@@ -475,22 +493,30 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			/>
 		</aside>
 
-		<main bind:this={mainScroller} class="main">
-			<div class="main-fab-row">
-				{#if sidebarCollapsed}
-					<button
-						type="button"
-						class="ghost icon-button sidebar-toggle"
-						onclick={() => {
-							sidebarCollapsed = false;
-						}}
-						aria-label="Expand sidebar"
-					>
-						<span aria-hidden="true">→</span>
-					</button>
-				{/if}
-			</div>
+		{#if sidebarCollapsed}
+			<button
+				type="button"
+				class="ghost floating-button sidebar-reopen"
+				onclick={() => {
+					sidebarCollapsed = false;
+				}}
+				aria-label="Expand sidebar"
+				title="Expand sidebar"
+			>
+				<svg viewBox="0 0 20 20" aria-hidden="true">
+					<path
+						d="M4.5 4.5h11v11h-11zM8 4.5v11M11 7.25 13.75 10 11 12.75"
+						fill="none"
+						stroke="currentColor"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="1.6"
+					/>
+				</svg>
+			</button>
+		{/if}
 
+		<main bind:this={mainScroller} class="main">
 			<section class="composer-card composer-compact">
 				<div class="composer-header">
 					<div>
@@ -597,58 +623,18 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			</section>
 		</main>
 
-		<div class="screen-tools">
-			<button
-				type="button"
-				class="ghost icon-button topbar-button"
-				aria-label="Scroll to top"
-				title="Scroll to top"
-				onclick={() => scrollMainTo('top')}
-			>
-				<svg viewBox="0 0 20 20" aria-hidden="true">
-					<path
-						d="M5 7.75 10 3l5 4.75M10 4v12"
-						fill="none"
-						stroke="currentColor"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="1.7"
-					/>
-				</svg>
-			</button>
-
-			<button
-				type="button"
-				class="ghost icon-button topbar-button"
-				aria-label="Scroll to bottom"
-				title="Scroll to bottom"
-				onclick={() => scrollMainTo('bottom')}
-			>
-				<svg viewBox="0 0 20 20" aria-hidden="true">
-					<path
-						d="M5 12.25 10 17l5-4.75M10 16V4"
-						fill="none"
-						stroke="currentColor"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="1.7"
-					/>
-				</svg>
-			</button>
-
-			<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
-				<button type="submit" class="ghost icon-button topbar-button" aria-label="Log out" title="Log out">
+		{#if !browserOpen}
+			<div class="screen-tools" role="group" aria-label="Page controls">
+				<button
+					type="button"
+					class="ghost floating-button"
+					aria-label="Scroll to top"
+					title="Scroll to top"
+					onclick={() => scrollMainTo('top')}
+				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path
-							d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
-							fill="none"
-							stroke="currentColor"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="1.7"
-						/>
-						<path
-							d="M11 6.25 15 10l-4 3.75M15 10H7.5"
+							d="M5 7.75 10 3l5 4.75M10 4v12"
 							fill="none"
 							stroke="currentColor"
 							stroke-linecap="round"
@@ -657,8 +643,50 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						/>
 					</svg>
 				</button>
-			</form>
-		</div>
+
+				<button
+					type="button"
+					class="ghost floating-button"
+					aria-label="Scroll to bottom"
+					title="Scroll to bottom"
+					onclick={() => scrollMainTo('bottom')}
+				>
+					<svg viewBox="0 0 20 20" aria-hidden="true">
+						<path
+							d="M5 12.25 10 17l5-4.75M10 16V4"
+							fill="none"
+							stroke="currentColor"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="1.7"
+						/>
+					</svg>
+				</button>
+
+				<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
+					<button type="submit" class="ghost floating-button" aria-label="Log out" title="Log out">
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path
+								d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+							<path
+								d="M11 6.25 15 10l-4 3.75M15 10H7.5"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+						</svg>
+					</button>
+				</form>
+			</div>
+		{/if}
 	</div>
 
 	<WorkspaceBrowser
