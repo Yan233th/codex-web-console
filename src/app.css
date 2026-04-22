@@ -340,6 +340,15 @@ button.danger {
 	min-width: 0;
 }
 
+.browser-list {
+	min-height: 0;
+	align-content: start;
+	grid-auto-rows: max-content;
+	overflow: auto;
+	overflow-x: hidden;
+	padding-right: 4px;
+}
+
 .thread-items {
 	min-height: 0;
 	overflow: auto;
@@ -364,6 +373,16 @@ button.danger {
 .thread-item small {
 	min-width: 0;
 	overflow-wrap: anywhere;
+}
+
+.browser-entry strong,
+.browser-entry span {
+	min-width: 0;
+}
+
+.browser-entry {
+	overflow: hidden;
+	align-content: start;
 }
 
 .thread-title {
@@ -414,6 +433,21 @@ button.danger {
 .browser-entry span,
 .sidebar-copy {
 	color: var(--ink-soft);
+}
+
+.browser-entry strong {
+	display: block;
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
+}
+
+.browser-entry span {
+	display: -webkit-box;
+	overflow: hidden;
+	-webkit-box-orient: vertical;
+	-webkit-line-clamp: 2;
+	overflow-wrap: anywhere;
 }
 
 .detail-layout {
@@ -480,6 +514,7 @@ button.danger {
 	max-width: var(--chat-max-width);
 	display: grid;
 	gap: 16px;
+	padding-bottom: 18px;
 }
 
 .composer-prompt {
@@ -718,6 +753,7 @@ button.danger {
 	width: 100%;
 	margin-left: auto;
 	margin-right: auto;
+	padding-bottom: 18px;
 }
 
 .composer-surface {
@@ -737,11 +773,24 @@ button.danger {
 	right: 24px;
 	bottom: 24px;
 	width: min(520px, calc(100vw - 48px));
+	min-width: 0;
 	padding: 20px;
 	display: grid;
 	grid-template-rows: auto auto 1fr;
 	gap: 16px;
+	overflow: hidden;
 	z-index: 10;
+}
+
+.browser-header > div:first-child {
+	min-width: 0;
+	flex: 1 1 auto;
+}
+
+.browser-header h2 {
+	overflow: hidden;
+	text-overflow: ellipsis;
+	white-space: nowrap;
 }
 
 .empty {
