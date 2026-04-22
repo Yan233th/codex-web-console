@@ -55,6 +55,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let bootErrorMessage = $state<string | null>(null);
 	let loadingThread = $state(false);
 	let submitting = $state(false);
+	let interrupting = $state(false);
 	let source: EventSource | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
 	let autoScrolledThreadId = $state<string | null>(null);
@@ -62,6 +63,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let turnNavigationLockUntil = $state(0);
 	let scrollRestoreLockUntil = $state(0);
 	let followLiveOutput = $state(true);
+	let liveConnectionState = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
 	const liveEntryList = $derived(Object.values(liveEntries));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
@@ -116,6 +118,33 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	);
 	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
 	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
+	const fallbackRunningTurnId = $derived.by(() => {
+		const turns = visibleSelectedThread?.turns ?? [];
+		for (let index = turns.length - 1; index >= 0; index -= 1) {
+			if (turns[index].completedAt === null) {
+				return turns[index].id;
+			}
+		}
+
+		return null;
+	});
+	let runningTurnId = $state<string | null>(null);
+	const interruptableTurnId = $derived(runningTurnId ?? fallbackRunningTurnId);
+	const liveConnectionWarning = $derived.by(() => {
+		if (!authenticated) {
+			return null;
+		}
+
+		if (liveConnectionState === 'connecting') {
+			return 'Connecting to live updates…';
+		}
+
+		if (liveConnectionState === 'reconnecting') {
+			return 'Live updates disconnected. Reconnecting…';
+		}
+
+		return null;
+	});
 	const enhanceRedirect: SubmitFunction = () => {
 		return async ({ result, update }) => {
 			if (result.type === 'redirect') {
@@ -241,6 +270,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		threads = [...data.threads];
 		selectedThread = data.selectedThread;
 		selectedThreadId = data.selectedThread?.thread.id ?? null;
+		runningTurnId = null;
 		approvals = data.selectedThread?.approvals ?? [];
 		workspacePath = data.selectedThread?.thread.cwd ?? String(data.homePath);
 		draftingThread = !data.selectedThread;
@@ -412,6 +442,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 
+		if (interruptableTurnId) {
+			errorMessage = 'This turn is still running. Stop it before sending another reply.';
+			return;
+		}
+
 		submitting = true;
 		followLiveOutput = true;
 		errorMessage = null;
@@ -433,6 +468,31 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
 			submitting = false;
+		}
+	}
+
+	async function interruptCurrentTurn(): Promise<void> {
+		if (!selectedThread || !interruptableTurnId) {
+			return;
+		}
+
+		interrupting = true;
+		errorMessage = null;
+
+		try {
+			await readJson<{ ok: true }>(
+				await fetch(`/api/threads/${selectedThread.thread.id}/interrupt`, {
+					method: 'POST',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({
+						turnId: interruptableTurnId
+					})
+				})
+			);
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		} finally {
+			interrupting = false;
 		}
 	}
 
@@ -611,7 +671,15 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (event.type === 'turn.completed') {
 			void loadThreads();
 			if (event.threadId === selectedThreadId) {
+				runningTurnId = null;
 				void loadThread(event.threadId, { silent: true });
+			}
+			return;
+		}
+
+		if (event.type === 'turn.started') {
+			if (event.threadId === selectedThreadId) {
+				runningTurnId = event.turnId;
 			}
 			return;
 		}
@@ -684,11 +752,15 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 
 		const nextSource = new EventSource('/api/events');
+		liveConnectionState = source ? 'reconnecting' : 'connecting';
+		nextSource.onopen = () => {
+			liveConnectionState = 'live';
+		};
 		nextSource.onmessage = (raw) => {
 			handleEvent(JSON.parse(raw.data) as ConsoleEvent);
 		};
 		nextSource.onerror = () => {
-			errorMessage = 'Live connection dropped.';
+			liveConnectionState = 'reconnecting';
 		};
 
 		source = nextSource;
@@ -886,6 +958,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						{:else if showingDraftThread}
 							<p class="copy">Pick a workspace, write the first message, and start here.</p>
 						{/if}
+						{#if liveConnectionWarning}
+							<p class="warning workspace-warning">{liveConnectionWarning}</p>
+						{/if}
 					</div>
 					{#if showingDraftThread}
 						<button
@@ -967,6 +1042,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 				{#if !showingDraftThread && visibleSelectedThread}
 					<div class="reply-box composer-surface">
+						{#if liveConnectionWarning}
+							<p class="warning workspace-warning">{liveConnectionWarning}</p>
+						{/if}
 						{#if visibleErrorMessage}
 							<p class="error workspace-error">{visibleErrorMessage}</p>
 						{/if}
@@ -975,10 +1053,29 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							<textarea
 								bind:value={replyPrompt}
 								rows="4"
+								disabled={Boolean(interruptableTurnId) || interrupting}
 								onkeydown={(event) => submitOnEnter(event, () => void sendReply())}
 							></textarea>
 						</label>
-						<button type="button" onclick={() => void sendReply()} disabled={submitting}>Send</button>
+						<div class="reply-actions">
+							<button
+								type="button"
+								onclick={() => void sendReply()}
+								disabled={submitting || interrupting || Boolean(interruptableTurnId)}
+							>
+								Send
+							</button>
+							{#if interruptableTurnId}
+								<button
+									type="button"
+									class="ghost"
+									onclick={() => void interruptCurrentTurn()}
+									disabled={interrupting}
+								>
+									{interrupting ? 'Stopping…' : 'Stop'}
+								</button>
+							{/if}
+						</div>
 					</div>
 				{/if}
 			</section>

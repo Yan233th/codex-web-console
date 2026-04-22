@@ -33,6 +33,13 @@ export const GET = async ({ locals, request }) => {
 				}
 			};
 
+			try {
+				controller.enqueue(encoder.encode(': connected\n\n'));
+			} catch {
+				close();
+				return;
+			}
+
 			const unsubscribe = codex.subscribe((event) => {
 				if (closed) {
 					return;

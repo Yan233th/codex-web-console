@@ -126,6 +126,13 @@ h3 {
 	gap: 12px;
 }
 
+.reply-actions {
+	display: flex;
+	align-items: center;
+	gap: 10px;
+	flex-wrap: wrap;
+}
+
 .field span {
 	font-size: 13px;
 	font-weight: 700;
@@ -486,6 +493,10 @@ button.danger {
 
 .workspace-error {
 	margin: 4px 0 0;
+}
+
+.workspace-warning {
+	margin: 8px 0 0;
 }
 
 .turn {

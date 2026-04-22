@@ -395,6 +395,14 @@ class LocalCodexService {
 		});
 	}
 
+	async interruptTurn(threadId: string, turnId: string): Promise<void> {
+		await this.ensureStarted();
+		await this.request('turn/interrupt', {
+			threadId,
+			turnId
+		});
+	}
+
 	async readDirectory(targetPath: string): Promise<DirectoryListing> {
 		await this.ensureStarted();
 		const response = (await this.request('fs/readDirectory', {
