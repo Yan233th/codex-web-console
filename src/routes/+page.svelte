@@ -58,6 +58,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let source: EventSource | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
 	let autoScrolledThreadId = $state<string | null>(null);
+	let activeTurnIndex = $state(0);
+	let turnNavigationLockUntil = $state(0);
+	let scrollRestoreLockUntil = $state(0);
+	let followLiveOutput = $state(true);
 	const liveEntryList = $derived(Object.values(liveEntries));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
@@ -110,6 +114,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const selectedSummary = $derived(
 		visibleThreads.find((thread) => thread.id === visibleSelectedThreadId) ?? null
 	);
+	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
+	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
 	const enhanceRedirect: SubmitFunction = () => {
 		return async ({ result, update }) => {
 			if (result.type === 'redirect') {
@@ -135,6 +141,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			selectedThreadId = null;
 			selectedThread = null;
 			draftingThread = true;
+			followLiveOutput = true;
 			errorMessage = null;
 			liveEntries = {};
 			approvals = [];
@@ -148,6 +155,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 		draftingThread = false;
 		selectedThreadId = threadId;
+		followLiveOutput = true;
 		errorMessage = null;
 		await goto(threadHref(threadId), {
 			keepFocus: true,
@@ -286,16 +294,34 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 
+		scrollRestoreLockUntil = Date.now() + 300;
+
 		if (snapshot.mode === 'window') {
 			window.scrollTo({
-				top: snapshot.stickToBottom ? document.documentElement.scrollHeight : snapshot.top
+				top: snapshot.stickToBottom ? document.documentElement.scrollHeight : snapshot.top,
+				behavior: 'auto'
 			});
 			return;
 		}
 
 		mainScroller.scrollTo({
-			top: snapshot.stickToBottom ? mainScroller.scrollHeight : snapshot.top
+			top: snapshot.stickToBottom ? mainScroller.scrollHeight : snapshot.top,
+			behavior: 'auto'
 		});
+	}
+
+	function isNearBottom(): boolean {
+		if (!mainScroller) {
+			return true;
+		}
+
+		if (getComputedStyle(mainScroller).overflowY === 'visible') {
+			const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
+			return maxTop - window.scrollY < 96;
+		}
+
+		const maxTop = Math.max(0, mainScroller.scrollHeight - mainScroller.clientHeight);
+		return maxTop - mainScroller.scrollTop < 96;
 	}
 
 	async function loadThread(
@@ -324,6 +350,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			if (silent) {
 				await tick();
 				restoreScrollSnapshot(snapshot);
+				await new Promise<void>((resolve) => {
+					requestAnimationFrame(() => {
+						restoreScrollSnapshot(snapshot);
+						resolve();
+					});
+				});
 			}
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
@@ -352,6 +384,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		errorMessage = null;
 
 		try {
+			followLiveOutput = true;
 			const payload = await readJson<{ thread: ThreadSummary }>(
 				await fetch('/api/threads', {
 					method: 'POST',
@@ -380,6 +413,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 
 		submitting = true;
+		followLiveOutput = true;
 		errorMessage = null;
 
 		try {
@@ -404,6 +438,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function startDraftThread(): void {
 		draftingThread = true;
+		followLiveOutput = true;
 		errorMessage = null;
 		liveEntries = {};
 		approvals = [];
@@ -436,7 +471,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		submit();
 	}
 
-	function scrollMainTo(position: 'top' | 'bottom'): void {
+	function scrollMainTo(position: 'top' | 'bottom', behavior: ScrollBehavior = 'smooth'): void {
 		if (!mainScroller) {
 			return;
 		}
@@ -444,14 +479,114 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (getComputedStyle(mainScroller).overflowY === 'visible') {
 			window.scrollTo({
 				top: position === 'top' ? 0 : document.documentElement.scrollHeight,
-				behavior: 'smooth'
+				behavior
 			});
 			return;
 		}
 
 		mainScroller.scrollTo({
 			top: position === 'top' ? 0 : mainScroller.scrollHeight,
-			behavior: 'smooth'
+			behavior
+		});
+	}
+
+	function getHistoricalTurnElements(): HTMLElement[] {
+		if (!mainScroller) {
+			return [];
+		}
+
+		return [...mainScroller.querySelectorAll<HTMLElement>('[data-turn-id]')];
+	}
+
+	function measureActiveTurnIndex(): number {
+		const turnElements = getHistoricalTurnElements();
+		if (turnElements.length === 0 || !mainScroller) {
+			return -1;
+		}
+
+		const threshold =
+			getComputedStyle(mainScroller).overflowY === 'visible'
+				? 24
+				: mainScroller.getBoundingClientRect().top + 24;
+
+		let nextIndex = 0;
+		for (const [index, element] of turnElements.entries()) {
+			if (element.getBoundingClientRect().top <= threshold) {
+				nextIndex = index;
+				continue;
+			}
+
+			break;
+		}
+
+		return nextIndex;
+	}
+
+	function syncActiveTurnIndex(): void {
+		if (Date.now() < turnNavigationLockUntil) {
+			return;
+		}
+
+		const nextIndex = measureActiveTurnIndex();
+		if (nextIndex >= 0) {
+			activeTurnIndex = nextIndex;
+		}
+	}
+
+	function scrollTurnIntoView(index: number): void {
+		const turnElements = getHistoricalTurnElements();
+		const element = turnElements[index];
+		if (!element || !mainScroller) {
+			return;
+		}
+
+		turnNavigationLockUntil = Date.now() + 450;
+
+		const offset = 24;
+		if (getComputedStyle(mainScroller).overflowY === 'visible') {
+			window.scrollTo({
+				top: window.scrollY + element.getBoundingClientRect().top - offset,
+				behavior: 'smooth'
+			});
+		} else {
+			mainScroller.scrollTo({
+				top:
+					mainScroller.scrollTop +
+					element.getBoundingClientRect().top -
+					mainScroller.getBoundingClientRect().top -
+					offset,
+				behavior: 'smooth'
+			});
+		}
+
+		activeTurnIndex = index;
+	}
+
+	function jumpTurn(direction: 'previous' | 'next'): void {
+		const turnCount = historicalTurns.length;
+		if (turnCount === 0) {
+			return;
+		}
+
+		const targetIndex =
+			direction === 'previous'
+				? Math.max(0, activeTurnIndex - 1)
+				: Math.min(turnCount - 1, activeTurnIndex + 1);
+
+		scrollTurnIntoView(targetIndex);
+	}
+
+	function maybeFollowLiveOutput(threadId: string): void {
+		if (threadId !== selectedThreadId || !followLiveOutput) {
+			return;
+		}
+
+		void tick().then(() => {
+			if (!followLiveOutput) {
+				return;
+			}
+
+			scrollMainTo('bottom', 'auto');
 		});
 	}
 
@@ -483,6 +618,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 		if (event.type === 'item.started' || event.type === 'item.completed') {
 			updateLiveEntry(event.item.id, event.threadId, event.item);
+			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
 
@@ -494,6 +630,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{ text: `${current?.text ?? ''}${event.delta}` },
 				{ kind: 'assistant', label: 'Assistant' }
 			);
+			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
 
@@ -505,6 +642,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{ text: `${current?.text ?? ''}${event.delta}` },
 				{ kind: 'reasoning', label: 'Reasoning' }
 			);
+			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
 
@@ -516,6 +654,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{ output: `${current?.output ?? ''}${event.delta}` },
 				{ kind: 'command', label: 'Command' }
 			);
+			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
 
@@ -527,6 +666,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{ text: `${current?.text ?? ''}${event.delta}` },
 				{ kind: 'file_change', label: 'File change' }
 			);
+			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
 
@@ -581,6 +721,37 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		void tick().then(() => {
 			scrollMainTo('bottom');
 		});
+	});
+
+	$effect(() => {
+		if (!authenticated || !mainScroller || showingDraftThread) {
+			return;
+		}
+
+		const target =
+			getComputedStyle(mainScroller).overflowY === 'visible' ? window : mainScroller;
+		const handleScroll = () => {
+			if (Date.now() < scrollRestoreLockUntil) {
+				return;
+			}
+
+			followLiveOutput = isNearBottom();
+			if (historicalTurns.length > 0) {
+				syncActiveTurnIndex();
+			}
+		};
+
+		void tick().then(() => {
+			handleScroll();
+		});
+
+		target.addEventListener('scroll', handleScroll, { passive: true });
+		window.addEventListener('resize', handleScroll);
+
+		return () => {
+			target.removeEventListener('scroll', handleScroll);
+			window.removeEventListener('resize', handleScroll);
+		};
 	});
 
 	$effect(() => {
@@ -824,7 +995,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path
-							d="M5 7.75 10 3l5 4.75M10 4v12"
+							d="M5 8.75 10 4l5 4.75M5 13.75 10 9l5 4.75"
 							fill="none"
 							stroke="currentColor"
 							stroke-linecap="round"
@@ -833,6 +1004,48 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						/>
 					</svg>
 				</button>
+
+				{#if !showingDraftThread}
+					<button
+						type="button"
+						class="ghost floating-button"
+						aria-label="Previous turn"
+						title="Previous turn"
+						disabled={!hasHistoricalTurns || activeTurnIndex <= 0}
+						onclick={() => jumpTurn('previous')}
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path
+								d="M12.5 6 7.5 10l5 4"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+						</svg>
+					</button>
+
+					<button
+						type="button"
+						class="ghost floating-button"
+						aria-label="Next turn"
+						title="Next turn"
+						disabled={!hasHistoricalTurns || activeTurnIndex >= historicalTurns.length - 1}
+						onclick={() => jumpTurn('next')}
+					>
+						<svg viewBox="0 0 20 20" aria-hidden="true">
+							<path
+								d="M7.5 6 12.5 10l-5 4"
+								fill="none"
+								stroke="currentColor"
+								stroke-linecap="round"
+								stroke-linejoin="round"
+								stroke-width="1.7"
+							/>
+						</svg>
+					</button>
+				{/if}
 
 				<button
 					type="button"
@@ -843,7 +1056,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				>
 					<svg viewBox="0 0 20 20" aria-hidden="true">
 						<path
-							d="M5 12.25 10 17l5-4.75M10 16V4"
+							d="M5 6.25 10 11l5-4.75M5 11.25 10 16l5-4.75"
 							fill="none"
 							stroke="currentColor"
 							stroke-linecap="round"

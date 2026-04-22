@@ -37,7 +37,7 @@
 	{/if}
 
 	{#each turns as turn (turn.id)}
-		<section class="turn">
+		<section class="turn" id={`turn-${turn.id}`} data-turn-id={turn.id}>
 			<div class="turn-meta">
 				<span>Turn</span>
 				<strong>{turn.status}</strong>
