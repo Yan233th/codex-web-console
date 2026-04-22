@@ -75,13 +75,21 @@ function normalizeThreadStatus(status: ThreadStatus): string {
 	return status.type;
 }
 
+function normalizeTimestamp(value: number | null | undefined): number {
+	if (!value || !Number.isFinite(value)) {
+		return Date.now();
+	}
+
+	return value < 10_000_000_000 ? value * 1000 : value;
+}
+
 function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
 	return {
 		id: thread.id,
 		title: thread.name?.trim() || thread.preview.trim() || path.basename(thread.cwd) || thread.id,
 		preview: thread.preview,
 		cwd: thread.cwd,
-		updatedAt: thread.updatedAt,
+		updatedAt: normalizeTimestamp(thread.updatedAt),
 		status: normalizeThreadStatus(thread.status),
 		provider: readString(thread.modelProvider)
 	};
@@ -314,7 +322,9 @@ class LocalCodexService {
 		const response = (await this.request('thread/list', {
 			limit: 50,
 			archived: false,
-			modelProviders: []
+			modelProviders: [],
+			sortKey: 'updated_at',
+			sortDirection: 'desc'
 		})) as { data: ThreadRecord[] };
 
 		return response.data.map(normalizeThreadSummary);

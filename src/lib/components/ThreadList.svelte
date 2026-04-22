@@ -10,6 +10,31 @@
 		selectedThreadId: string | null;
 		onSelect: (threadId: string) => void;
 	} = $props();
+
+	function formatRelativeTime(timestamp: number): string {
+		const deltaSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+
+		if (deltaSeconds < 60) {
+			return 'just now';
+		}
+
+		const minutes = Math.floor(deltaSeconds / 60);
+		if (minutes < 60) {
+			return `${minutes}m ago`;
+		}
+
+		const hours = Math.floor(minutes / 60);
+		if (hours < 24) {
+			return `${hours}h ago`;
+		}
+
+		const days = Math.floor(hours / 24);
+		if (days < 7) {
+			return `${days}d ago`;
+		}
+
+		return new Date(timestamp).toLocaleDateString();
+	}
 </script>
 
 <section class="thread-list">
@@ -34,7 +59,10 @@
 					{#if thread.provider}
 						<small class="thread-provider">{thread.provider}</small>
 					{/if}
-					<small class="thread-status">{thread.status}</small>
+					<div class="thread-meta">
+						<small class="thread-status">{thread.status}</small>
+						<small class="thread-updated">{formatRelativeTime(thread.updatedAt)}</small>
+					</div>
 				</button>
 			{/each}
 		{/if}

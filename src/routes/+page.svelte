@@ -52,6 +52,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let loadingThread = $state(false);
 	let submitting = $state(false);
 	let source: EventSource | null = null;
+	let mainScroller = $state<HTMLElement | null>(null);
 	const liveEntryList = $derived(Object.values(liveEntries));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
@@ -282,6 +283,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		submit();
 	}
 
+	function scrollMainTo(position: 'top' | 'bottom'): void {
+		if (!mainScroller) {
+			return;
+		}
+
+		mainScroller.scrollTo({
+			top: position === 'top' ? 0 : mainScroller.scrollHeight,
+			behavior: 'smooth'
+		});
+	}
+
 	function handleEvent(event: ConsoleEvent): void {
 		if (event.type === 'thread.started') {
 			void loadThreads();
@@ -463,7 +475,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			/>
 		</aside>
 
-		<main class="main">
+		<main bind:this={mainScroller} class="main">
 			<div class="main-fab-row">
 				{#if sidebarCollapsed}
 					<button
@@ -477,29 +489,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						<span aria-hidden="true">→</span>
 					</button>
 				{/if}
-
-				<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
-					<button type="submit" class="ghost icon-button topbar-button" aria-label="Log out" title="Log out">
-						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path
-								d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-							<path
-								d="M11 6.25 15 10l-4 3.75M15 10H7.5"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-						</svg>
-					</button>
-				</form>
 			</div>
 
 			<section class="composer-card composer-compact">
@@ -540,7 +529,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				</div>
 			</section>
 
-			<section class="detail-card detail-layout">
+			<section class="thread-workspace detail-layout">
 				<div class="detail-header">
 					<div>
 						<p class="eyebrow">Thread</p>
@@ -607,6 +596,69 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				{/if}
 			</section>
 		</main>
+
+		<div class="screen-tools">
+			<button
+				type="button"
+				class="ghost icon-button topbar-button"
+				aria-label="Scroll to top"
+				title="Scroll to top"
+				onclick={() => scrollMainTo('top')}
+			>
+				<svg viewBox="0 0 20 20" aria-hidden="true">
+					<path
+						d="M5 7.75 10 3l5 4.75M10 4v12"
+						fill="none"
+						stroke="currentColor"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="1.7"
+					/>
+				</svg>
+			</button>
+
+			<button
+				type="button"
+				class="ghost icon-button topbar-button"
+				aria-label="Scroll to bottom"
+				title="Scroll to bottom"
+				onclick={() => scrollMainTo('bottom')}
+			>
+				<svg viewBox="0 0 20 20" aria-hidden="true">
+					<path
+						d="M5 12.25 10 17l5-4.75M10 16V4"
+						fill="none"
+						stroke="currentColor"
+						stroke-linecap="round"
+						stroke-linejoin="round"
+						stroke-width="1.7"
+					/>
+				</svg>
+			</button>
+
+			<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
+				<button type="submit" class="ghost icon-button topbar-button" aria-label="Log out" title="Log out">
+					<svg viewBox="0 0 20 20" aria-hidden="true">
+						<path
+							d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
+							fill="none"
+							stroke="currentColor"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="1.7"
+						/>
+						<path
+							d="M11 6.25 15 10l-4 3.75M15 10H7.5"
+							fill="none"
+							stroke="currentColor"
+							stroke-linecap="round"
+							stroke-linejoin="round"
+							stroke-width="1.7"
+						/>
+					</svg>
+				</button>
+			</form>
+		</div>
 	</div>
 
 	<WorkspaceBrowser

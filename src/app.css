@@ -241,12 +241,14 @@ button.danger {
 
 .main {
 	display: grid;
-	grid-template-rows: auto auto minmax(0, 1fr);
+	grid-template-rows: auto auto auto;
 	gap: 12px;
 	min-width: 0;
 	min-height: 0;
-	overflow: hidden;
+	overflow: auto;
 	justify-items: center;
+	align-content: start;
+	padding-right: 6px;
 }
 
 .composer-card,
@@ -280,8 +282,8 @@ button.danger {
 	min-height: 0;
 	display: flex;
 	align-items: center;
-	justify-content: space-between;
-	width: min(100%, calc(var(--chat-max-width) + 5rem));
+	justify-content: flex-start;
+	width: min(100%, calc(var(--chat-max-width) + 8rem));
 }
 
 .sidebar-toggle {
@@ -290,17 +292,31 @@ button.danger {
 }
 
 .logout-form {
-	margin-left: auto;
+	flex: 0 0 auto;
+}
+
+.screen-tools {
+	position: fixed;
+	top: 50%;
+	right: 18px;
+	transform: translateY(-50%);
+	display: grid;
+	gap: 8px;
+	justify-items: center;
+	z-index: 30;
 }
 
 .topbar-button {
 	border-radius: 999px;
 	width: 40px;
+	min-width: 40px;
 	height: 40px;
+	min-height: 40px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
+	flex: 0 0 auto;
 }
 
 .topbar-button svg {
@@ -368,6 +384,20 @@ button.danger {
 	white-space: nowrap;
 }
 
+.thread-meta {
+	display: flex;
+	align-items: center;
+	justify-content: space-between;
+	gap: 10px;
+	min-width: 0;
+}
+
+.thread-updated {
+	flex: 0 0 auto;
+	color: var(--ink-soft);
+	font-variant-numeric: tabular-nums;
+}
+
 .thread-provider {
 	color: var(--mint);
 	font-weight: 700;
@@ -386,10 +416,20 @@ button.danger {
 }
 
 .detail-layout {
-	min-height: 0;
+	min-height: auto;
 	display: grid;
-	grid-template-rows: auto auto minmax(0, 1fr) auto;
-	width: min(100%, calc(var(--chat-max-width) + 5rem));
+	grid-template-rows: auto auto auto auto;
+	width: min(100%, calc(var(--chat-max-width) + 8rem));
+}
+
+.thread-workspace {
+	min-height: auto;
+	padding: 16px 18px 0;
+	border: 1px solid var(--line);
+	border-radius: 28px;
+	background: rgba(255, 255, 255, 0.72);
+	box-shadow: var(--shadow);
+	backdrop-filter: blur(16px);
 }
 
 .detail-provider {
@@ -399,10 +439,19 @@ button.danger {
 	color: var(--mint);
 }
 
+.detail-header {
+	width: 100%;
+	margin: 0 auto;
+	padding: 0 0 12px;
+	border-bottom: 1px solid rgba(15, 23, 42, 0.08);
+}
+
 .detail-body {
-	min-height: 0;
-	overflow: auto;
-	padding-right: 6px;
+	min-height: auto;
+	overflow: visible;
+	padding: 14px 6px 0 0;
+	display: grid;
+	justify-items: center;
 }
 
 .turn {
@@ -562,6 +611,9 @@ button.danger {
 	margin-top: 18px;
 	display: grid;
 	gap: 12px;
+	width: 100%;
+	margin-left: auto;
+	margin-right: auto;
 }
 
 .approval-card {
@@ -573,11 +625,13 @@ button.danger {
 
 .reply-box {
 	margin-top: 14px;
-	max-width: var(--chat-max-width);
+	width: 100%;
+	margin-left: auto;
+	margin-right: auto;
 }
 
 .composer-surface {
-	padding-top: 14px;
+	padding-top: 18px;
 	border-top: 1px solid rgba(15, 23, 42, 0.08);
 }
 
@@ -605,7 +659,8 @@ button.danger {
 }
 
 .timeline {
-	max-width: var(--chat-max-width);
+	width: 100%;
+	max-width: 100%;
 }
 
 @media (max-width: 960px) {
@@ -647,5 +702,13 @@ button.danger {
 
 	.main-fab-row {
 		justify-content: flex-start;
+	}
+
+	.screen-tools {
+		top: auto;
+		right: 14px;
+		bottom: 14px;
+		transform: none;
+		grid-auto-flow: column;
 	}
 }
