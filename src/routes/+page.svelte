@@ -120,6 +120,40 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		};
 	};
 
+	function threadHref(threadId: string | null): string {
+		if (!threadId) {
+			return '/';
+		}
+
+		const params = new URLSearchParams({ thread: threadId });
+		return `/?${params.toString()}`;
+	}
+
+	async function openThread(threadId: string | null): Promise<void> {
+		if (!threadId) {
+			selectedThreadId = null;
+			selectedThread = null;
+			draftingThread = true;
+			errorMessage = null;
+			liveEntries = {};
+			approvals = [];
+			replyPrompt = '';
+			await goto(threadHref(null), {
+				keepFocus: true,
+				noScroll: true
+			});
+			return;
+		}
+
+		draftingThread = false;
+		selectedThreadId = threadId;
+		errorMessage = null;
+		await goto(threadHref(threadId), {
+			keepFocus: true,
+			noScroll: true
+		});
+	}
+
 	function updateLiveEntry(
 		itemId: string,
 		threadId: string,
@@ -197,10 +231,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	$effect(() => {
 		threads = [...data.threads];
 		selectedThread = data.selectedThread;
-		selectedThreadId = data.selectedThread?.thread.id ?? data.threads[0]?.id ?? null;
+		selectedThreadId = data.selectedThread?.thread.id ?? null;
 		approvals = data.selectedThread?.approvals ?? [];
 		workspacePath = data.selectedThread?.thread.cwd ?? String(data.homePath);
-		draftingThread = data.threads.length === 0;
+		draftingThread = !data.selectedThread;
 		bootErrorMessage = data.codexError ? String(data.codexError) : null;
 	});
 
@@ -208,9 +242,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const payload = await readJson<{ threads: ThreadSummary[] }>(await fetch('/api/threads'));
 		bootErrorMessage = null;
 		threads = payload.threads;
-		if (!selectedThreadId && threads[0]) {
-			selectedThreadId = threads[0].id;
-		}
 	}
 
 	type ScrollSnapshot =
@@ -334,8 +365,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			newPrompt = '';
 			draftingThread = false;
 			await loadThreads();
-			selectedThreadId = payload.thread.id;
-			await loadThread(payload.thread.id);
+			await openThread(payload.thread.id);
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
@@ -379,6 +409,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		newPrompt = '';
 		replyPrompt = '';
 		workspacePath = visibleSelectedThread?.thread.cwd ?? String(data.homePath);
+		void openThread(null);
 	}
 
 	async function resolveApproval(
@@ -540,7 +571,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 
-		if (visibleThreads.length === 0) {
+		if (allThreads.length === 0) {
 			selectedThreadId = null;
 			selectedThread = null;
 			approvals = [];
@@ -549,8 +580,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 
-		if (!visibleThreads.some((thread) => thread.id === selectedThreadId)) {
-			selectedThreadId = visibleThreads[0]?.id ?? null;
+		if (selectedThreadId && !allThreads.some((thread) => thread.id === selectedThreadId)) {
+			selectedThreadId = null;
+			selectedThread = null;
+			approvals = [];
+			liveEntries = {};
+			draftingThread = true;
 		}
 	});
 </script>
@@ -613,10 +648,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			<ThreadList
 				threads={visibleThreads}
 				selectedThreadId={draftingThread ? null : visibleSelectedThreadId}
-				onSelect={(threadId) => {
-					draftingThread = false;
-					selectedThreadId = threadId;
-				}}
+				onSelect={(threadId) => void openThread(threadId)}
 			/>
 		</aside>
 

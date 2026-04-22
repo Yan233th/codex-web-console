@@ -5,7 +5,7 @@ import { fail, redirect } from '@sveltejs/kit';
 import { clearAuthCookie, verifySubmittedToken, writeAuthCookie } from '$lib/server/auth';
 import { codex } from '$lib/server/codex';
 
-export const load = async ({ locals }) => {
+export const load = async ({ locals, url }) => {
 	if (!locals.authenticated) {
 		return {
 			authenticated: false,
@@ -19,8 +19,18 @@ export const load = async ({ locals }) => {
 	}
 
 	try {
+		const requestedThreadId = url.searchParams.get('thread')?.trim() || null;
 		const threads = await codex.listThreads();
-		const selectedThread = threads[0] ? await codex.readThread(threads[0].id) : null;
+		let selectedThread = null;
+		let codexError: string | null = null;
+
+		if (requestedThreadId) {
+			try {
+				selectedThread = await codex.readThread(requestedThreadId);
+			} catch (error) {
+				codexError = error instanceof Error ? error.message : String(error);
+			}
+		}
 
 		return {
 			authenticated: true,
@@ -29,7 +39,7 @@ export const load = async ({ locals }) => {
 			threads,
 			selectedThread,
 			homePath: homedir(),
-			codexError: null
+			codexError
 		};
 	} catch (error) {
 		return {
