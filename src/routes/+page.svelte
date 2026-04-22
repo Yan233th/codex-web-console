@@ -57,6 +57,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let submitting = $state(false);
 	let source: EventSource | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
+	let autoScrolledThreadId = $state<string | null>(null);
 	const liveEntryList = $derived(Object.values(liveEntries));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
@@ -564,6 +565,22 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (authenticated && selectedThreadId && selectedThread?.thread.id !== selectedThreadId) {
 			void loadThread(selectedThreadId);
 		}
+	});
+
+	$effect(() => {
+		if (!authenticated || loadingThread || draftingThread) {
+			return;
+		}
+
+		const threadId = selectedThread?.thread.id ?? data.selectedThread?.thread.id ?? null;
+		if (!threadId || threadId === autoScrolledThreadId) {
+			return;
+		}
+
+		autoScrolledThreadId = threadId;
+		void tick().then(() => {
+			scrollMainTo('bottom');
+		});
 	});
 
 	$effect(() => {
