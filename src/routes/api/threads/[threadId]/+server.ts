@@ -10,5 +10,11 @@ function requireAuth(locals: App.Locals) {
 
 export const GET = async ({ locals, params }) => {
 	requireAuth(locals);
-	return json({ detail: await codex.readThread(params.threadId) });
+
+	try {
+		return json({ detail: await codex.readThread(params.threadId) });
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return json({ error: message }, { status: 500 });
+	}
 };

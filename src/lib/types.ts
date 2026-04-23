@@ -13,7 +13,7 @@ export interface ThreadSummary {
 	title: string;
 	preview: string;
 	cwd: string;
-	updatedAt: number;
+	updatedAt: number | null;
 	status: string;
 	provider: string | null;
 }

@@ -59,6 +59,8 @@ type PendingApproval = ApprovalRequest & {
 	params: Record<string, unknown>;
 };
 
+const REQUEST_TIMEOUT_MS = 30_000;
+
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
 }
@@ -75,9 +77,9 @@ function normalizeThreadStatus(status: ThreadStatus): string {
 	return status.type;
 }
 
-function normalizeTimestamp(value: number | null | undefined): number {
+function normalizeTimestamp(value: number | null | undefined): number | null {
 	if (!value || !Number.isFinite(value)) {
-		return Date.now();
+		return null;
 	}
 
 	return value < 10_000_000_000 ? value * 1000 : value;
@@ -302,6 +304,7 @@ class LocalCodexService {
 		{
 			resolve: (value: unknown) => void;
 			reject: (error: Error) => void;
+			timeout: ReturnType<typeof setTimeout>;
 		}
 	>();
 	private listeners = new Set<(event: ConsoleEvent) => void>();
@@ -503,18 +506,13 @@ class LocalCodexService {
 			}
 		});
 
+		this.process.on('error', (error: Error) => {
+			this.failProcess(error);
+		});
+
 		this.process.on('close', (code: number | null) => {
 			const error = new Error(`Codex app-server exited with code ${code ?? -1}.`);
-			for (const request of this.pendingRequests.values()) {
-				request.reject(error);
-			}
-
-			this.pendingRequests.clear();
-			this.pendingApprovals.clear();
-			this.process = null;
-			this.buffer = '';
-
-			this.emit({ type: 'error', message: error.message });
+			this.failProcess(error);
 		});
 
 		await this.request('initialize', {
@@ -538,7 +536,17 @@ class LocalCodexService {
 		const id = this.requestId++;
 
 		return new Promise((resolve, reject) => {
-			this.pendingRequests.set(id, { resolve, reject });
+			const timeout = setTimeout(() => {
+				const pending = this.pendingRequests.get(id);
+				if (!pending) {
+					return;
+				}
+
+				this.pendingRequests.delete(id);
+				pending.reject(new Error(`Request timed out: ${method}`));
+			}, REQUEST_TIMEOUT_MS);
+
+			this.pendingRequests.set(id, { resolve, reject, timeout });
 			this.write({ id, method, params });
 		});
 	}
@@ -585,6 +593,7 @@ class LocalCodexService {
 			}
 
 			this.pendingRequests.delete(message.id);
+			clearTimeout(pending.timeout);
 
 			if (message.error) {
 				pending.reject(new Error(message.error.message || `Request ${message.id} failed.`));
@@ -755,6 +764,20 @@ class LocalCodexService {
 		for (const listener of this.listeners) {
 			listener(event);
 		}
+	}
+
+	private failProcess(error: Error): void {
+		for (const request of this.pendingRequests.values()) {
+			clearTimeout(request.timeout);
+			request.reject(error);
+		}
+
+		this.pendingRequests.clear();
+		this.pendingApprovals.clear();
+		this.process = null;
+		this.buffer = '';
+
+		this.emit({ type: 'error', message: error.message });
 	}
 }
 

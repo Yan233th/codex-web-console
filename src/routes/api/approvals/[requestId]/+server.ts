@@ -10,9 +10,17 @@ function requireAuth(locals: App.Locals) {
 
 export const POST = async ({ locals, params, request }) => {
 	requireAuth(locals);
-	const body = (await request.json()) as {
+	let body: {
 		decision?: 'accept' | 'acceptForSession' | 'decline';
 	};
+
+	try {
+		body = (await request.json()) as {
+			decision?: 'accept' | 'acceptForSession' | 'decline';
+		};
+	} catch {
+		return json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+	}
 
 	if (
 		body.decision !== 'accept' &&
@@ -22,6 +30,11 @@ export const POST = async ({ locals, params, request }) => {
 		return json({ error: 'A valid approval decision is required.' }, { status: 400 });
 	}
 
-	await codex.resolveApproval(params.requestId, body.decision);
-	return json({ ok: true });
+	try {
+		await codex.resolveApproval(params.requestId, body.decision);
+		return json({ ok: true });
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return json({ error: message }, { status: 500 });
+	}
 };

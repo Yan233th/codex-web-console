@@ -11,10 +11,19 @@ function requireAuth(locals: App.Locals) {
 export const POST = async ({ locals, params, request }) => {
 	requireAuth(locals);
 
-	const body = (await request.json()) as {
+	let body: {
 		cwd?: string;
 		prompt?: string;
 	};
+
+	try {
+		body = (await request.json()) as {
+			cwd?: string;
+			prompt?: string;
+		};
+	} catch {
+		return json({ error: 'Request body must be valid JSON.' }, { status: 400 });
+	}
 
 	const cwd = String(body.cwd ?? '').trim();
 	const prompt = String(body.prompt ?? '').trim();
@@ -23,6 +32,11 @@ export const POST = async ({ locals, params, request }) => {
 		return json({ error: 'Workspace path and prompt are required.' }, { status: 400 });
 	}
 
-	await codex.sendMessage(params.threadId, cwd, prompt);
-	return json({ ok: true });
+	try {
+		await codex.sendMessage(params.threadId, cwd, prompt);
+		return json({ ok: true });
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return json({ error: message }, { status: 500 });
+	}
 };

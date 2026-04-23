@@ -13,5 +13,11 @@ function requireAuth(locals: App.Locals) {
 export const GET = async ({ locals, url }) => {
 	requireAuth(locals);
 	const targetPath = url.searchParams.get('path')?.trim() || homedir();
-	return json({ listing: await codex.readDirectory(targetPath) });
+
+	try {
+		return json({ listing: await codex.readDirectory(targetPath) });
+	} catch (err) {
+		const message = err instanceof Error ? err.message : String(err);
+		return json({ error: message }, { status: 500 });
+	}
 };

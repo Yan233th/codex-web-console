@@ -54,7 +54,14 @@ export function readAuthState(cookies: Cookies): {
 
 export function verifySubmittedToken(token: string): boolean {
 	const configured = getConfiguredToken();
-	return configured.token !== null && token.trim() === configured.token;
+	if (!configured.token) {
+		return false;
+	}
+
+	const expected = Buffer.from(digest(configured.token));
+	const actual = Buffer.from(digest(token.trim()));
+
+	return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
 export function writeAuthCookie(cookies: Cookies): void {

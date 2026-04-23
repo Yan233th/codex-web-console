@@ -11,7 +11,11 @@
 		onSelect: (threadId: string) => void;
 	} = $props();
 
-	function formatRelativeTime(timestamp: number): string {
+	function formatRelativeTime(timestamp: number | null): string {
+		if (!timestamp || !Number.isFinite(timestamp)) {
+			return 'unknown';
+		}
+
 		const deltaSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
 
 		if (deltaSeconds < 60) {
