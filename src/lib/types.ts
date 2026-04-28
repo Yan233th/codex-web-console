@@ -3,6 +3,7 @@ export type EntryKind =
 	| 'assistant'
 	| 'reasoning'
 	| 'web_search'
+	| 'tool_call'
 	| 'command'
 	| 'file_change'
 	| 'plan'
@@ -35,6 +36,10 @@ export interface TimelineEntry {
 	pattern?: string;
 	actionType?: string | null;
 	queries?: string[];
+	toolName?: string;
+	serverName?: string;
+	toolInput?: string;
+	toolOutput?: string;
 	exitCode?: number | null;
 	status?: string | null;
 	startedAt?: number | null;
@@ -73,6 +78,7 @@ export interface ThreadDetail {
 	thread: ThreadSummary;
 	turns: TimelineTurn[];
 	approvals: ApprovalRequest[];
+	omittedTurnCount?: number;
 }
 
 export interface DirectoryListing {

@@ -1,6 +1,6 @@
 <script lang="ts">
 import { enhance } from '$app/forms';
-import { goto } from '$app/navigation';
+import { goto, pushState } from '$app/navigation';
 import { tick } from 'svelte';
 import type { SubmitFunction } from '@sveltejs/kit';
 
@@ -60,6 +60,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let submitting = $state(false);
 	let interrupting = $state(false);
 	let source: EventSource | null = null;
+	let liveEntryFlushFrame: number | null = null;
+	let followLiveOutputFrame: number | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
 	let autoScrolledThreadId = $state<string | null>(null);
 	let activeTurnIndex = $state(0);
@@ -339,6 +341,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	function stashCurrentLiveEntries() {
+		flushQueuedLiveEntryUpdates();
 		if (!selectedThreadId || Object.keys(liveEntries).length === 0) return;
 		liveEntryBuffers = {
 			...liveEntryBuffers,
@@ -350,7 +353,89 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		liveEntries = {};
 	}
 
+	type QueuedLiveEntryUpdate = {
+		itemId: string;
+		threadId: string;
+		patch: Partial<TimelineEntry>;
+		defaults?: Pick<TimelineEntry, 'kind' | 'label'>;
+	};
+
+	const queuedLiveEntryUpdates = new Map<string, QueuedLiveEntryUpdate>();
+
+	function liveEntryQueueKey(threadId: string, itemId: string) {
+		return `${threadId}\u0000${itemId}`;
+	}
+
+	function queueLiveEntryUpdate(
+		itemId: string,
+		threadId: string,
+		patch: Partial<TimelineEntry>,
+		defaults?: Pick<TimelineEntry, 'kind' | 'label'>
+	) {
+		const key = liveEntryQueueKey(threadId, itemId);
+		const current = queuedLiveEntryUpdates.get(key);
+		queuedLiveEntryUpdates.set(key, {
+			itemId,
+			threadId,
+			patch: { ...(current?.patch ?? {}), ...patch },
+			defaults: defaults ?? current?.defaults
+		});
+
+		if (liveEntryFlushFrame !== null) return;
+		if (typeof window === 'undefined') {
+			flushQueuedLiveEntryUpdates();
+			return;
+		}
+
+		liveEntryFlushFrame = window.requestAnimationFrame(() => {
+			liveEntryFlushFrame = null;
+			flushQueuedLiveEntryUpdates();
+		});
+	}
+
+	function appendLiveEntryField(
+		itemId: string,
+		threadId: string,
+		field: 'text' | 'output',
+		delta: string,
+		patch: Partial<TimelineEntry>,
+		defaults: Pick<TimelineEntry, 'kind' | 'label'>
+	) {
+		const queued = queuedLiveEntryUpdates.get(liveEntryQueueKey(threadId, itemId));
+		const queuedValue = queued?.patch[field];
+		const currentValue = getLiveEntry(threadId, itemId)?.[field];
+		queueLiveEntryUpdate(
+			itemId,
+			threadId,
+			{
+				...patch,
+				[field]: `${typeof queuedValue === 'string' ? queuedValue : (currentValue ?? '')}${delta}`
+			},
+			defaults
+		);
+	}
+
+	function flushQueuedLiveEntryUpdates() {
+		if (liveEntryFlushFrame !== null && typeof window !== 'undefined') {
+			window.cancelAnimationFrame(liveEntryFlushFrame);
+			liveEntryFlushFrame = null;
+		}
+		if (queuedLiveEntryUpdates.size === 0) return;
+		const updates = [...queuedLiveEntryUpdates.values()];
+		queuedLiveEntryUpdates.clear();
+		for (const update of updates) {
+			updateLiveEntry(update.itemId, update.threadId, update.patch, update.defaults);
+		}
+	}
+
 	function getLiveEntry(threadId: string, itemId: string) {
+		const queued = queuedLiveEntryUpdates.get(liveEntryQueueKey(threadId, itemId));
+		if (queued) {
+			const selected = threadId === selectedThreadId;
+			const entries = selected ? liveEntries : (liveEntryBuffers[threadId] ?? {});
+			const current = entries[itemId];
+			if (current) return mergeEntry(current, queued.patch);
+		}
 		return threadId === selectedThreadId ? liveEntries[itemId] : liveEntryBuffers[threadId]?.[itemId];
 	}
 
@@ -404,9 +489,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function isHistoricalLiveEntry(
 		entry: TimelineEntry,
 		historicalIds: Set<string>,
-		settledTurnIds: Set<string>
+		settledTurnIds: Set<string>,
+		historicalUserTexts: Set<string>
 	) {
 		if (historicalIds.has(entry.id)) return true;
+		if (entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) return true;
 		return Boolean(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
 	}
 
@@ -414,7 +501,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (!detail) return entries;
 		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
 		const settledTurnIds = settledHistoricalTurnIds(detail);
-		return entries.filter((entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds));
+		const historicalUserTexts = new Set(
+			detail.turns
+				.flatMap((turn) => turn.entries)
+				.filter((entry) => entry.kind === 'user' && entry.text?.trim())
+				.map((entry) => entry.text?.trim() ?? '')
+		);
+		return entries.filter((entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds, historicalUserTexts));
 	}
 
 	function reconcileRunningTurn(detail: ThreadDetail) {
@@ -461,8 +554,15 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function pruneLiveEntriesFromDetail(detail: ThreadDetail) {
 		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
 		const settledTurnIds = settledHistoricalTurnIds(detail);
+		const historicalUserTexts = new Set(
+			detail.turns
+				.flatMap((turn) => turn.entries)
+				.filter((entry) => entry.kind === 'user' && entry.text?.trim())
+				.map((entry) => entry.text?.trim() ?? '')
+		);
 		const keepEntry = ([itemId, entry]: [string, TimelineEntry]) =>
 			!historicalIds.has(itemId) &&
+			!(entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) &&
 			!(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
 
 		if (detail.thread.id === selectedThreadId) {
@@ -481,11 +581,18 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (preserved) {
 			runtimeReasoning = {
 				...runtimeReasoning,
-				[detail.thread.id]: preserved.filter(
-					(entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds)
+				[detail.thread.id]: preserved.filter((entry) =>
+					!isHistoricalLiveEntry(entry, historicalIds, settledTurnIds, new Set())
 				)
 			};
 		}
+	}
+
+	function updateThreadUrl(threadId: string | null) {
+		const href = threadHref(threadId);
+		if (typeof window === 'undefined') return;
+		if (`${window.location.pathname}${window.location.search}` === href) return;
+		pushState(href, {});
 	}
 
 	async function openThread(threadId: string | null) {
@@ -501,7 +608,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			liveEntries = {};
 			approvals = [];
 			replyPrompt = '';
-			await goto(threadHref(null), { keepFocus: true, noScroll: true });
+			updateThreadUrl(null);
 			return;
 		}
 		if (selectedThreadId !== threadId) {
@@ -514,7 +621,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		flushLiveBuffer(threadId);
 		followLiveOutput = true;
 		errorMessage = null;
-		await goto(threadHref(threadId), { keepFocus: true, noScroll: true });
+		updateThreadUrl(threadId);
 	}
 
 	function updateLiveEntry(itemId: string, threadId: string, patch: Partial<TimelineEntry>, defaults?: Pick<TimelineEntry, 'kind' | 'label'>) {
@@ -532,6 +639,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	function completeLiveEntriesForTurn(threadId: string, turnId: string) {
+		flushQueuedLiveEntryUpdates();
 		const entries = threadId === selectedThreadId ? liveEntries : (liveEntryBuffers[threadId] ?? {});
 		let changed = false;
 		const completedAt = Date.now();
@@ -558,6 +666,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	function rememberRuntimeReasoning(threadId: string) {
+		flushQueuedLiveEntryUpdates();
 		const entries = Object.values(liveEntries).filter(e => e.kind === 'reasoning' && e.text?.trim());
 		if (!entries.length) return;
 		const merged = new Map((runtimeReasoning[threadId] ?? []).map(e => [e.id, e] as const));
@@ -592,13 +701,21 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	type ScrollSnapshot = { mode: 'window' | 'element'; top: number; stickToBottom: boolean };
 
-	async function loadThread(threadId: string, options: { silent?: boolean } = {}) {
+	async function loadThread(threadId: string, options: { silent?: boolean; full?: boolean } = {}) {
 		const silent = options.silent ?? false;
 		const snapshot = silent ? captureScrollSnapshot() : null;
 		if (!silent) loadingThread = true;
 		else rememberRuntimeReasoning(threadId);
 		try {
-			const payload = await readJson<{ detail: ThreadDetail }>(await fetch(`/api/threads/${threadId}`));
+			const keepFullHistory =
+				options.full ??
+				(
+					selectedThread?.thread.id === threadId &&
+					(selectedThread.omittedTurnCount ?? 0) === 0 &&
+					selectedThread.turns.length > 5
+				);
+			const suffix = keepFullHistory ? '' : '?tailTurns=5';
+			const payload = await readJson<{ detail: ThreadDetail }>(await fetch(`/api/threads/${threadId}${suffix}`));
 			bootErrorMessage = null;
 			errorMessage = null;
 			selectedThread = payload.detail;
@@ -638,14 +755,44 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (!workspacePath.trim() || !newPrompt.trim()) { errorMessage = 'Workspace path and prompt are required.'; return; }
 		submitting = true;
 		errorMessage = null;
+		const prompt = newPrompt.trim();
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt: newPrompt, permissionMode }) }));
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
 			draftingThread = false;
-			await loadThreads();
-			await openThread(payload.thread.id);
+			const pendingTurnId = `pending-${Date.now()}`;
+			threads = [payload.thread, ...threads.filter((thread) => thread.id !== payload.thread.id)];
+			selectedThreadId = payload.thread.id;
+			selectedThread = {
+				thread: payload.thread,
+				turns: [
+					{
+						id: pendingTurnId,
+						status: 'inprogress',
+						startedAt: Date.now(),
+						completedAt: null,
+						durationMs: null,
+						entries: [
+							{
+								id: `${pendingTurnId}-user`,
+								kind: 'user',
+								label: 'You',
+								text: prompt
+							}
+						]
+					}
+				],
+				approvals: [],
+				omittedTurnCount: 0
+			};
+			runningTurnId = pendingTurnId;
+			approvals = [];
+			liveEntries = {};
+			updateThreadUrl(payload.thread.id);
+			void loadThreads();
+			void loadThread(payload.thread.id, { silent: true });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (isThreadNotFound(error)) clearSelectedThreadState(message);
@@ -657,14 +804,15 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	async function sendReply() {
 		if (!selectedThread || !replyPrompt.trim()) return;
 		if (interruptableTurnId) { errorMessage = 'This turn is still running. Stop it before sending another reply.'; return; }
+		const prompt = replyPrompt.trim();
 		submitting = true;
 		followLiveOutput = true;
 		errorMessage = null;
+		replyPrompt = '';
 		try {
-			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt: replyPrompt, permissionMode }) }));
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt, permissionMode }) }));
 			bootErrorMessage = null;
-			replyPrompt = '';
-		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		} catch (error) { replyPrompt = prompt; errorMessage = error instanceof Error ? error.message : String(error); }
 		finally { submitting = false; }
 	}
 
@@ -811,7 +959,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function maybeFollowLiveOutput(threadId: string) {
 		if (threadId !== selectedThreadId || !followLiveOutput) return;
-		void tick().then(() => { if (followLiveOutput) scrollMainTo('bottom', 'auto'); });
+		if (followLiveOutputFrame !== null) return;
+		followLiveOutputFrame = -1;
+		void tick().then(() => {
+			if (typeof window === 'undefined') {
+				followLiveOutputFrame = null;
+				if (followLiveOutput) scrollMainTo('bottom', 'auto');
+				return;
+			}
+			followLiveOutputFrame = window.requestAnimationFrame(() => {
+				followLiveOutputFrame = null;
+				if (followLiveOutput) scrollMainTo('bottom', 'auto');
+			});
+		});
 	}
 
 	function handleEvent(event: ConsoleEvent) {
@@ -830,7 +990,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 		if (event.type === 'turn.started') { if (event.threadId === selectedThreadId) runningTurnId = event.turnId; return; }
 		if (event.type === 'item.started') {
-			updateLiveEntry(event.item.id, event.threadId, {
+			queueLiveEntryUpdate(event.item.id, event.threadId, {
 				...event.item,
 				turnId: event.turnId,
 				startedAt: event.item.startedAt ?? Date.now()
@@ -842,7 +1002,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			const current = getLiveEntry(event.threadId, event.item.id);
 			const completedAt = event.item.completedAt ?? Date.now();
 			const startedAt = event.item.startedAt ?? current?.startedAt ?? null;
-			updateLiveEntry(event.item.id, event.threadId, {
+			queueLiveEntryUpdate(event.item.id, event.threadId, {
 				...event.item,
 				turnId: event.turnId,
 				startedAt,
@@ -852,10 +1012,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			maybeFollowLiveOutput(event.threadId);
 			return;
 		}
-		if (event.type === 'message.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'assistant', label: 'Assistant' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'reasoning.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'command.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { ...event.item, turnId: event.turnId, output: `${c?.output ?? ''}${event.delta}` }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'file_change.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'message.delta') { appendLiveEntryField(event.itemId, event.threadId, 'text', event.delta, { turnId: event.turnId }, { kind: 'assistant', label: 'Assistant' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'reasoning.delta') { appendLiveEntryField(event.itemId, event.threadId, 'text', event.delta, { turnId: event.turnId }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'command.delta') { appendLiveEntryField(event.itemId, event.threadId, 'output', event.delta, { ...event.item, turnId: event.turnId }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'file_change.delta') { appendLiveEntryField(event.itemId, event.threadId, 'text', event.delta, { turnId: event.turnId }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
 		if (event.type === 'error') errorMessage = event.message;
 	}
 
@@ -1049,22 +1209,22 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							{/if}
 						</svg>
 					</button>
+					<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
+						<button aria-label="Log out" title="Log out">
+							<svg viewBox="0 0 20 20" aria-hidden="true">
+								<path d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+								<path d="M11 6.25 15 10l-4 3.75M15 10H7.5" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+							</svg>
+						</button>
+					</form>
 					<button
 						onclick={() => { sidebarCollapsed = true; }}
 						aria-label="Collapse sidebar" title="Collapse sidebar"
 					>
 						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path d="M7 4v12M13 7l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+							<path d="M7 4v12M13 7l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
 					</button>
-					<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
-						<button aria-label="Log out" title="Log out">
-							<svg viewBox="0 0 20 20" aria-hidden="true">
-								<path d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-								<path d="M11 6.25 15 10l-4 3.75M15 10H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-							</svg>
-						</button>
-					</form>
 				</div>
 			</div>
 
@@ -1192,6 +1352,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								liveEntries={visibleLiveEntryList}
 								preservedEntries={visiblePreservedEntryList}
 								{approvals}
+								omittedTurnCount={visibleSelectedThread?.omittedTurnCount ?? 0}
+								onLoadFullHistory={() => {
+									if (visibleSelectedThreadId) void loadThread(visibleSelectedThreadId, { silent: true, full: true });
+								}}
 							/>
 						</div>
 					</div>
@@ -1279,7 +1443,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			aria-label="Expand sidebar" title="Expand sidebar"
 		>
 			<svg viewBox="0 0 20 20" aria-hidden="true">
-				<path d="M7 4v12M10 7l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+				<path d="M7 4v12M10 7l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
 		</button>
 	{/if}

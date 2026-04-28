@@ -6,12 +6,16 @@
 		turns,
 		liveEntries,
 		preservedEntries = [],
-		approvals
+		approvals,
+		omittedTurnCount = 0,
+		onLoadFullHistory
 	}: {
 		turns: TimelineTurn[];
 		liveEntries: TimelineEntry[];
 		preservedEntries?: TimelineEntry[];
 		approvals: ApprovalRequest[];
+		omittedTurnCount?: number;
+		onLoadFullHistory?: () => void;
 	} = $props();
 
 	const BATCH = 5;
@@ -31,6 +35,7 @@
 		return (
 			entry.kind === 'reasoning' ||
 			entry.kind === 'command' ||
+			entry.kind === 'tool_call' ||
 			entry.kind === 'file_change' ||
 			entry.kind === 'web_search' ||
 			entry.kind === 'plan'
@@ -41,6 +46,7 @@
 		return (
 			entry.kind === 'reasoning' ||
 			entry.kind === 'command' ||
+			entry.kind === 'tool_call' ||
 			entry.kind === 'file_change' ||
 			entry.kind === 'web_search' ||
 			entry.kind === 'plan'
@@ -132,11 +138,13 @@
 
 	function summarizeWork(entries: TimelineEntry[]) {
 		const commandCount = entries.filter((entry) => entry.kind === 'command').length;
+		const toolCallCount = entries.filter((entry) => entry.kind === 'tool_call').length;
 		const fileChangeCount = entries.filter((entry) => entry.kind === 'file_change').length;
 		const webSearchCount = entries.filter((entry) => entry.kind === 'web_search').length;
 		const parts: string[] = [];
 
 		if (commandCount > 0) parts.push(`Ran ${commandCount} command${commandCount > 1 ? 's' : ''}`);
+		if (toolCallCount > 0) parts.push(`调用 ${toolCallCount} 个工具`);
 		if (fileChangeCount > 0) parts.push(`已编辑 ${fileChangeCount} 个文件`);
 		if (webSearchCount > 0) parts.push(`搜索 ${webSearchCount} 次`);
 
@@ -278,6 +286,21 @@
 					{/if}
 				</div>
 			</details>
+		{:else if kind === 'tool_call'}
+			<details class="command-block">
+				<summary>
+					<span>{entry.serverName ? `${entry.serverName}.${entry.toolName ?? 'tool'}` : (entry.toolName ?? 'Tool call')}</span>
+					{#if commandStatusLabel(entry)}
+						<small class="command-meta">{commandStatusLabel(entry)}</small>
+					{/if}
+				</summary>
+				{#if entry.toolInput}
+					<pre class="command-code">{entry.toolInput}</pre>
+				{/if}
+				{#if entry.toolOutput}
+					<pre class="command-code command-output">{entry.toolOutput}</pre>
+				{/if}
+			</details>
 		{:else}
 			{#if entry.text}
 				<div class="markdown">{@html renderMarkdown(entry.text)}</div>
@@ -319,6 +342,14 @@
 {/snippet}
 
 <section class="timeline">
+	{#if omittedTurnCount > 0 && onLoadFullHistory}
+		<div class="load-more-strip">
+			<button type="button" class="ghost load-more-btn" onclick={onLoadFullHistory}>
+				Load full history — <span class="load-more-count">{omittedTurnCount}+ earlier turn{omittedTurnCount > 1 ? 's' : ''}</span>
+			</button>
+		</div>
+	{/if}
+
 	{#if hidden > 0}
 		<div class="load-more-strip">
 			<button type="button" class="ghost load-more-btn" onclick={loadMore}>

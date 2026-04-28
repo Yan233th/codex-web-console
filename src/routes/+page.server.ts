@@ -26,7 +26,7 @@ export const load = async ({ locals, url }) => {
 
 		if (requestedThreadId) {
 			try {
-				selectedThread = await codex.readThread(requestedThreadId);
+				selectedThread = await codex.readThread(requestedThreadId, { tailTurns: 5 });
 			} catch (error) {
 				codexError = error instanceof Error ? error.message : String(error);
 			}

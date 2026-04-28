@@ -1,4 +1,5 @@
 import { dev } from '$app/environment';
+import { env } from '$env/dynamic/private';
 import { createHash, timingSafeEqual } from 'node:crypto';
 import type { Cookies } from '@sveltejs/kit';
 
@@ -9,11 +10,16 @@ function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
 }
 
+function readAccessToken(): string | null {
+	const token = env.CODEX_WEB_CONSOLE_TOKEN?.trim();
+	return token ? token : null;
+}
+
 export function getConfiguredToken(): {
 	token: string | null;
 	fallbackActive: boolean;
 } {
-	const envToken = process.env.CODEX_WEB_CONSOLE_TOKEN?.trim();
+	const envToken = readAccessToken();
 	if (envToken) {
 		return { token: envToken, fallbackActive: false };
 	}

@@ -32,15 +32,25 @@ const allowedAttributes = {
 	a: ['href', 'target', 'rel']
 };
 
+const cache = new Map<string, string>();
+const MAX_CACHE_ENTRIES = 200;
+
 export function renderMarkdown(input: string | null | undefined): string {
 	if (!input?.trim()) {
 		return '';
 	}
 
+	const cached = cache.get(input);
+	if (cached !== undefined) {
+		cache.delete(input);
+		cache.set(input, cached);
+		return cached;
+	}
+
 	const parsed = marked.parse(input);
 	const html = typeof parsed === 'string' ? parsed : '';
 
-	return sanitizeHtml(html, {
+	const sanitized = sanitizeHtml(html, {
 		allowedTags,
 		allowedAttributes,
 		transformTags: {
@@ -50,4 +60,12 @@ export function renderMarkdown(input: string | null | undefined): string {
 			})
 		}
 	});
+
+	cache.set(input, sanitized);
+	if (cache.size > MAX_CACHE_ENTRIES) {
+		const oldest = cache.keys().next().value;
+		if (oldest !== undefined) cache.delete(oldest);
+	}
+
+	return sanitized;
 }

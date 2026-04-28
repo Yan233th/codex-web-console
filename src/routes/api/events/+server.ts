@@ -75,7 +75,8 @@ export const GET = async ({ locals, request }) => {
 	return new Response(stream, {
 		headers: {
 			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-store',
+			'Cache-Control': 'no-store, no-transform',
+			'X-Accel-Buffering': 'no',
 			Connection: 'keep-alive'
 		}
 	});

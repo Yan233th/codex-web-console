@@ -24,11 +24,14 @@ bun run dev
 
 ## Auth
 
-Set a single access token before starting, or copy `.env.example` into your own env setup:
+Set a single access token before starting, or copy `.env.example` to `.env`:
 
 ```sh
 export CODEX_WEB_CONSOLE_TOKEN=your-token
 ```
+
+SvelteKit loads `.env` automatically in development. A value exported in your
+shell takes precedence over the same key in `.env`.
 
 The landing page accepts exactly one token and stores a signed-in cookie locally.
 

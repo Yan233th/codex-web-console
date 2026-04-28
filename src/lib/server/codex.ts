@@ -60,6 +60,10 @@ type PendingApproval = ApprovalRequest & {
 	params: Record<string, unknown>;
 };
 
+type ReadThreadOptions = {
+	tailTurns?: number | null;
+};
+
 type ApprovalPolicy = 'on-request' | 'on-failure' | 'never';
 type SandboxName = 'workspace-write' | 'danger-full-access';
 type ApprovalsReviewer = 'user' | 'auto_review';
@@ -96,6 +100,18 @@ function readCommand(value: unknown): string | null {
 			: null);
 }
 
+function readJsonText(value: unknown): string | null {
+	const text = readString(value);
+	if (text !== null) return text;
+	if (value === null || value === undefined) return null;
+
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return null;
+	}
+}
+
 function readNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
@@ -114,6 +130,54 @@ function normalizeTimestamp(value: number | null | undefined): number | null {
 	}
 
 	return value < 10_000_000_000 ? value * 1000 : value;
+}
+
+function prettifyItemType(type: string): string {
+	return type
+		.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+		.replace(/[_-]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.replace(/^\w/, (char) => char.toUpperCase());
+}
+
+function normalizeToolCall(item: ThreadItem): TimelineEntry {
+	const tool = asRecord(item.tool);
+	const server = asRecord(item.server);
+	const input =
+		readJsonText(item.arguments) ??
+		readJsonText(item.args) ??
+		readJsonText(item.input) ??
+		readJsonText(item.params);
+	const output =
+		readJsonText(item.result) ??
+		readJsonText(item.output) ??
+		readJsonText(item.error);
+	const toolName =
+		readString(item.toolName) ??
+		readString(item.name) ??
+		readString(item.functionName) ??
+		readString(tool?.name) ??
+		prettifyItemType(item.type);
+	const serverName =
+		readString(item.serverName) ??
+		readString(item.mcpServerName) ??
+		readString(server?.name) ??
+		readString(item.server);
+
+	return {
+		id: item.id,
+		kind: 'tool_call',
+		label: 'Tool call',
+		toolName,
+		serverName: serverName ?? undefined,
+		toolInput: input ?? undefined,
+		toolOutput: output ?? undefined,
+		status: readString(item.status),
+		startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+		completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+		durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms)
+	};
 }
 
 function readThreadId(params: Record<string, unknown>): string | null {
@@ -247,6 +311,14 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 					queries.join('\n')
 			};
 		}
+		case 'mcpToolCall':
+		case 'mcp_tool_call':
+		case 'mcp-tool-call':
+		case 'toolCall':
+		case 'tool_call':
+		case 'function_call':
+		case 'functionCall':
+			return normalizeToolCall(item);
 		case 'commandExecution':
 			return {
 				id: item.id,
@@ -300,13 +372,23 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 			return {
 				id: item.id,
 				kind: 'system',
-				label: item.type
+				label: prettifyItemType(item.type)
 			};
 	}
 }
 
-function normalizeThreadDetail(thread: ThreadRecord, approvals: ApprovalRequest[]): ThreadDetail {
-	const turns: TimelineTurn[] = thread.turns.map((turn) => ({
+function normalizeThreadDetail(
+	thread: ThreadRecord,
+	approvals: ApprovalRequest[],
+	options: ReadThreadOptions = {}
+): ThreadDetail {
+	const tailTurns =
+		typeof options.tailTurns === 'number' && Number.isFinite(options.tailTurns) && options.tailTurns > 0
+			? Math.floor(options.tailTurns)
+			: null;
+	const omittedTurnCount = tailTurns ? Math.max(0, thread.turns.length - tailTurns) : 0;
+	const sourceTurns = omittedTurnCount > 0 ? thread.turns.slice(omittedTurnCount) : thread.turns;
+	const turns: TimelineTurn[] = sourceTurns.map((turn) => ({
 		id: turn.id,
 		status: turn.status,
 		startedAt: turn.startedAt,
@@ -318,7 +400,8 @@ function normalizeThreadDetail(thread: ThreadRecord, approvals: ApprovalRequest[
 	return {
 		thread: normalizeThreadSummary(thread),
 		turns,
-		approvals
+		approvals,
+		omittedTurnCount
 	};
 }
 
@@ -459,14 +542,14 @@ class LocalCodexService {
 		return response.data.map(normalizeThreadSummary);
 	}
 
-	async readThread(threadId: string): Promise<ThreadDetail> {
+	async readThread(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
 		await this.ensureStarted();
 		const response = (await this.request('thread/read', {
 			threadId,
 			includeTurns: true
 		})) as { thread: ThreadRecord };
 
-		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId));
+		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
 	}
 
 	async createThread(cwd: string, prompt: string, permissionMode?: PermissionMode): Promise<ThreadSummary> {
@@ -482,7 +565,7 @@ class LocalCodexService {
 			persistExtendedHistory: true
 		})) as { thread: ThreadRecord };
 
-		await this.request('turn/start', {
+		this.enqueueRequest('turn/start', {
 			threadId: response.thread.id,
 			input: [
 				{
@@ -494,7 +577,7 @@ class LocalCodexService {
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandboxPolicy: permissions.sandboxPolicy
-		});
+		}, 'Failed to start turn');
 
 		return normalizeThreadSummary(response.thread);
 	}
@@ -517,7 +600,7 @@ class LocalCodexService {
 			persistExtendedHistory: true
 		});
 
-		await this.request('turn/start', {
+		this.enqueueRequest('turn/start', {
 			threadId,
 			input: [
 				{
@@ -530,7 +613,7 @@ class LocalCodexService {
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandboxPolicy: permissions.sandboxPolicy
-		});
+		}, 'Failed to start turn');
 	}
 
 	async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -684,6 +767,13 @@ class LocalCodexService {
 
 			this.pendingRequests.set(id, { resolve, reject, timeout });
 			this.write({ id, method, params });
+		});
+	}
+
+	private enqueueRequest(method: string, params: unknown, failurePrefix: string): void {
+		void this.request(method, params).catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			this.emit({ type: 'error', message: `${failurePrefix}: ${message}` });
 		});
 	}
 
@@ -896,7 +986,7 @@ class LocalCodexService {
 
 			if (threadId && turnId && item) {
 				const normalized = normalizeTimelineEntry(item);
-				if (method === 'item/completed' && normalized.kind === 'command') {
+				if (method === 'item/completed' && (normalized.kind === 'command' || normalized.kind === 'tool_call')) {
 					normalized.status ??= 'completed';
 					normalized.completedAt ??= Date.now();
 				}

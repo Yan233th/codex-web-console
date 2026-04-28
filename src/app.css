@@ -149,6 +149,7 @@ button.danger:hover { background: #d63029; }
 	height: 100vh;
 	height: 100dvh;
 	overflow: hidden;
+	transition: grid-template-columns 0.22s ease;
 }
 .app-shell.sidebar-collapsed {
 	grid-template-columns: 0 minmax(0, 1fr);
@@ -195,7 +196,8 @@ button.danger:hover { background: #d63029; }
 
 .sidebar-actions {
 	display: flex;
-	gap: 6px;
+	align-items: center;
+	gap: 8px;
 }
 
 .sidebar-actions .logout-form {
@@ -205,27 +207,42 @@ button.danger:hover { background: #d63029; }
 
 .sidebar-actions button,
 .sidebar-actions .logout-form button {
-	width: 34px;
-	height: 34px;
+	width: 36px;
+	height: 36px;
 	padding: 0;
 	display: inline-flex;
 	align-items: center;
 	justify-content: center;
 	flex: 0 0 auto;
-	background: transparent;
-	color: var(--ink-soft);
-	border: 1px solid var(--line);
-	border-radius: 8px;
+	background: color-mix(in srgb, var(--surface) 64%, transparent);
+	color: color-mix(in srgb, var(--ink) 72%, var(--ink-soft));
+	border: 1px solid color-mix(in srgb, var(--line-strong) 58%, transparent);
+	border-radius: 13px;
+	box-shadow: none;
+	backdrop-filter: blur(14px);
+	transition:
+		background 0.15s ease,
+		border-color 0.15s ease,
+		color 0.15s ease,
+		box-shadow 0.15s ease,
+		transform 0.15s ease;
 }
 .sidebar-actions button:hover,
 .sidebar-actions .logout-form button:hover {
-	background: var(--line);
+	background: color-mix(in srgb, var(--surface) 82%, var(--line));
 	color: var(--ink);
+	border-color: var(--line-strong);
+	box-shadow: 0 8px 20px rgba(0, 0, 0, 0.1);
+	transform: translateY(-1px);
+}
+.sidebar-actions button:active,
+.sidebar-actions .logout-form button:active {
+	transform: translateY(0) scale(0.97);
 }
 
 .sidebar-actions svg {
-	width: 16px;
-	height: 16px;
+	width: 17px;
+	height: 17px;
 }
 
 /* ── Thread List ── */
@@ -455,12 +472,14 @@ button.danger:hover { background: #d63029; }
 	align-items: center;
 	justify-content: space-between;
 	gap: 12px;
+	min-height: var(--header-h);
 	padding: 12px 20px;
 	border-bottom: 1px solid var(--line);
 	flex: 0 0 auto;
+	transition: padding-left 0.22s ease;
 }
 .app-shell.sidebar-collapsed .detail-header {
-	padding-left: 58px;
+	padding-left: 76px;
 }
 .detail-header > div:first-child {
 	min-width: 0;
@@ -1524,22 +1543,53 @@ button.browser-close {
 
 .sidebar-reopen {
 	position: fixed !important;
-	top: 10px;
-	left: 12px;
+	top: calc((var(--header-h) - 40px) / 2);
+	left: 20px;
 	z-index: 30;
-	width: 32px;
-	height: 32px;
+	width: 40px;
+	height: 40px;
 	padding: 0;
-	border-radius: 8px;
-	background: transparent;
-	color: var(--ink-soft);
-	border: 1px solid transparent;
-	box-shadow: none;
+	display: inline-flex;
+	align-items: center;
+	justify-content: center;
+	border-radius: 13px;
+	background: color-mix(in srgb, var(--surface) 72%, transparent);
+	color: color-mix(in srgb, var(--ink) 82%, var(--ink-soft));
+	border: 1px solid color-mix(in srgb, var(--line-strong) 64%, transparent);
+	box-shadow: 0 10px 28px rgba(0, 0, 0, 0.1);
+	backdrop-filter: blur(16px);
+	animation: sidebarControlIn 0.18s ease both;
+	transition:
+		background 0.15s ease,
+		border-color 0.15s ease,
+		color 0.15s ease,
+		box-shadow 0.15s ease,
+		transform 0.15s ease;
 }
 .sidebar-reopen:hover {
-	background: var(--line);
+	background: color-mix(in srgb, var(--surface) 86%, var(--line));
 	color: var(--ink);
-	border-color: var(--line);
+	border-color: var(--line-strong);
+	box-shadow: 0 12px 30px rgba(0, 0, 0, 0.14);
+	transform: translateY(-1px);
+}
+.sidebar-reopen:active {
+	transform: translateY(0) scale(0.97);
+}
+.sidebar-reopen svg {
+	width: 19px;
+	height: 19px;
+}
+
+@keyframes sidebarControlIn {
+	from {
+		opacity: 0;
+		transform: translateX(-8px) scale(0.96);
+	}
+	to {
+		opacity: 1;
+		transform: translateX(0) scale(1);
+	}
 }
 
 .mobile-sidebar-backdrop {
@@ -1670,13 +1720,13 @@ button.browser-close {
 
 	.detail-header {
 		min-height: 56px;
-		padding: 10px 12px 10px 52px;
+		padding: 10px 12px 10px 64px;
 		background: color-mix(in srgb, var(--bg) 90%, transparent);
 		backdrop-filter: blur(16px);
 	}
 
 	.app-shell.sidebar-collapsed .detail-header {
-		padding-left: 52px;
+		padding-left: 64px;
 	}
 
 	.detail-title {
@@ -1754,12 +1804,9 @@ button.browser-close {
 	}
 
 	.sidebar-reopen {
-		top: 12px;
+		top: 8px;
 		left: 12px;
 		z-index: 45;
-		background: color-mix(in srgb, var(--surface) 88%, transparent);
-		border-color: var(--line);
-		backdrop-filter: blur(16px);
 	}
 
 	.browser-panel {
