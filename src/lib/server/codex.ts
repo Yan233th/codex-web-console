@@ -6,7 +6,11 @@ import type {
 	ApprovalRequest,
 	ConsoleEvent,
 	DirectoryListing,
+	ModelOption,
+	ModelSelection,
 	PermissionMode,
+	ReasoningEffort,
+	ServiceTier,
 	ThreadDetail,
 	ThreadSummary,
 	TimelineEntry,
@@ -114,6 +118,10 @@ function readJsonText(value: unknown): string | null {
 
 function readNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
 }
 
 function normalizeThreadStatus(status: ThreadStatus): string {
@@ -247,6 +255,67 @@ function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
 		updatedAt: normalizeTimestamp(thread.updatedAt),
 		status: normalizeThreadStatus(thread.status),
 		provider: readString(thread.modelProvider)
+	};
+}
+
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
+	return value === 'none' ||
+		value === 'minimal' ||
+		value === 'low' ||
+		value === 'medium' ||
+		value === 'high' ||
+		value === 'xhigh'
+		? value
+		: null;
+}
+
+function normalizeServiceTier(value: unknown): ServiceTier | null {
+	return value === 'fast' || value === 'flex' ? value : null;
+}
+
+function normalizeModelOption(value: unknown): ModelOption | null {
+	const record = asRecord(value);
+	if (!record) return null;
+
+	const model = readString(record.model) ?? readString(record.id);
+	if (!model) return null;
+
+	const supportedReasoningEfforts = (
+		Array.isArray(record.supportedReasoningEfforts) ? record.supportedReasoningEfforts : []
+	)
+		.map((entry) => normalizeReasoningEffort(asRecord(entry)?.reasoningEffort ?? asRecord(entry)?.effort ?? entry))
+		.filter((entry): entry is ReasoningEffort => entry !== null);
+	const defaultReasoningEffort =
+		normalizeReasoningEffort(record.defaultReasoningEffort) ?? supportedReasoningEfforts[0] ?? 'medium';
+
+	return {
+		id: readString(record.id) ?? model,
+		model,
+		displayName: readString(record.displayName) ?? model,
+		description: readString(record.description) ?? '',
+		hidden: record.hidden === true,
+		supportedReasoningEfforts,
+		defaultReasoningEffort,
+		additionalSpeedTiers: readStringArray(record.additionalSpeedTiers),
+		isDefault: record.isDefault === true
+	};
+}
+
+function modelRuntime(selection: ModelSelection | null | undefined): {
+	model?: string;
+	effort?: ReasoningEffort;
+	serviceTier?: ServiceTier;
+} {
+	if (!selection) return {};
+
+	const model = readString(selection.model);
+	const effort = normalizeReasoningEffort(selection.effort);
+	const serviceTier = normalizeServiceTier(selection.serviceTier);
+
+	return {
+		...(model ? { model } : {}),
+		...(effort ? { effort } : {}),
+		...(serviceTier ? { serviceTier } : {})
 	};
 }
 
@@ -542,6 +611,18 @@ class LocalCodexService {
 		return response.data.map(normalizeThreadSummary);
 	}
 
+	async listModels(): Promise<ModelOption[]> {
+		await this.ensureStarted();
+		const response = (await this.request('model/list', {
+			limit: 100,
+			includeHidden: false
+		})) as { data: unknown[] };
+
+		return (Array.isArray(response.data) ? response.data : [])
+			.map(normalizeModelOption)
+			.filter((model): model is ModelOption => model !== null);
+	}
+
 	async readThread(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
 		await this.ensureStarted();
 		const response = (await this.request('thread/read', {
@@ -552,12 +633,20 @@ class LocalCodexService {
 		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
 	}
 
-	async createThread(cwd: string, prompt: string, permissionMode?: PermissionMode): Promise<ThreadSummary> {
+	async createThread(
+		cwd: string,
+		prompt: string,
+		permissionMode?: PermissionMode,
+		modelSelection?: ModelSelection
+	): Promise<ThreadSummary> {
 		await this.ensureStarted();
 		const permissions = permissionRuntime(cwd, permissionMode);
+		const model = modelRuntime(modelSelection);
 
 		const response = (await this.request('thread/start', {
 			cwd,
+			...(model.model ? { model: model.model } : {}),
+			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
@@ -576,7 +665,8 @@ class LocalCodexService {
 			],
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
-			sandboxPolicy: permissions.sandboxPolicy
+			sandboxPolicy: permissions.sandboxPolicy,
+			...model
 		}, 'Failed to start turn');
 
 		return normalizeThreadSummary(response.thread);
@@ -586,14 +676,18 @@ class LocalCodexService {
 		threadId: string,
 		cwd: string,
 		prompt: string,
-		permissionMode?: PermissionMode
+		permissionMode?: PermissionMode,
+		modelSelection?: ModelSelection
 	): Promise<void> {
 		await this.ensureStarted();
 		const permissions = permissionRuntime(cwd, permissionMode);
+		const model = modelRuntime(modelSelection);
 
 		void this.request('thread/resume', {
 			threadId,
 			cwd,
+			...(model.model ? { model: model.model } : {}),
+			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
@@ -612,7 +706,8 @@ class LocalCodexService {
 					cwd,
 					approvalPolicy: permissions.approvalPolicy,
 					approvalsReviewer: permissions.approvalsReviewer,
-					sandboxPolicy: permissions.sandboxPolicy
+					sandboxPolicy: permissions.sandboxPolicy,
+					...model
 				})
 			)
 			.catch((error) => {

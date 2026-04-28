@@ -10,6 +10,26 @@ export type EntryKind =
 	| 'system';
 
 export type PermissionMode = 'default' | 'auto' | 'full';
+export type ReasoningEffort = 'none' | 'minimal' | 'low' | 'medium' | 'high' | 'xhigh';
+export type ServiceTier = 'fast' | 'flex';
+
+export interface ModelOption {
+	id: string;
+	model: string;
+	displayName: string;
+	description: string;
+	hidden: boolean;
+	supportedReasoningEfforts: ReasoningEffort[];
+	defaultReasoningEffort: ReasoningEffort;
+	additionalSpeedTiers: string[];
+	isDefault: boolean;
+}
+
+export interface ModelSelection {
+	model?: string | null;
+	effort?: ReasoningEffort | null;
+	serviceTier?: ServiceTier | null;
+}
 
 export interface ThreadSummary {
 	id: string;

@@ -4,6 +4,8 @@
 
 Minimal local-first web console for Codex.
 
+Published package: https://www.npmjs.com/package/codex-web-console
+
 ## Current Scope
 
 - Local-only: talks to a single local `codex app-server`
@@ -22,6 +24,27 @@ This project is intentionally narrow. It does not implement users, remotes, or a
 ```sh
 bun install
 bun run dev
+```
+
+## Quick Start
+
+Start the console with npx:
+
+```sh
+npx codex-web-console
+```
+
+Options:
+
+```sh
+npx codex-web-console --host 127.0.0.1 --port 3000 --no-open
+```
+
+For local testing from this repository:
+
+```sh
+bun run build
+npx . --no-open
 ```
 
 ## Auth
@@ -51,6 +74,7 @@ bun run build
 
 ## Requirements
 
+- Bun must be available in `PATH`
 - Codex must be available in `PATH`
 - The UI starts and talks to a single local `codex app-server`
 - The configured token is required outside development

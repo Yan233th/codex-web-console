@@ -12,7 +12,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		ApprovalRequest,
 		ConsoleEvent,
 		DirectoryListing,
+		ModelOption,
+		ModelSelection,
 		PermissionMode,
+		ReasoningEffort,
+		ServiceTier,
 		ThreadDetail,
 		ThreadSummary,
 		TimelineEntry
@@ -74,6 +78,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let liveConnectionState = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
 	let permissionMode = $state<PermissionMode>('default');
 	let permissionMenuOpen = $state(false);
+	let modelMenuOpen = $state(false);
+	let modelListOpen = $state(false);
+	let speedListOpen = $state(false);
+	let models = $state<ModelOption[]>([]);
+	let modelsLoaded = $state(false);
+	let selectedModelId = $state('gpt-5.5');
+	let reasoningEffort = $state<ReasoningEffort>('high');
+	let serviceTier = $state<ServiceTier | null>(null);
 
 	const permissionOptions: Array<{
 		mode: PermissionMode;
@@ -96,10 +108,97 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			description: '无沙箱，自动允许'
 		}
 	];
+	const fallbackModels: ModelOption[] = [
+		{
+			id: 'gpt-5.5',
+			model: 'gpt-5.5',
+			displayName: 'GPT-5.5',
+			description: 'Frontier model for complex coding, research, and real-world work.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'medium',
+			additionalSpeedTiers: ['fast'],
+			isDefault: true
+		},
+		{
+			id: 'gpt-5.4',
+			model: 'gpt-5.4',
+			displayName: 'GPT-5.4',
+			description: 'Strong model for everyday coding.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'medium',
+			additionalSpeedTiers: ['fast'],
+			isDefault: false
+		},
+		{
+			id: 'gpt-5.4-mini',
+			model: 'gpt-5.4-mini',
+			displayName: 'GPT-5.4-Mini',
+			description: 'Small, fast, and cost-efficient model for simpler coding tasks.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'medium',
+			additionalSpeedTiers: [],
+			isDefault: false
+		},
+		{
+			id: 'gpt-5.3-codex',
+			model: 'gpt-5.3-codex',
+			displayName: 'GPT-5.3-Codex',
+			description: 'Coding-optimized model.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'medium',
+			additionalSpeedTiers: [],
+			isDefault: false
+		},
+		{
+			id: 'gpt-5.3-codex-spark',
+			model: 'gpt-5.3-codex-spark',
+			displayName: 'GPT-5.3-Codex-Spark',
+			description: 'Ultra-fast coding model.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'high',
+			additionalSpeedTiers: [],
+			isDefault: false
+		},
+		{
+			id: 'gpt-5.2',
+			model: 'gpt-5.2',
+			displayName: 'GPT-5.2',
+			description: 'Optimized for professional work and long-running agents.',
+			hidden: false,
+			supportedReasoningEfforts: ['low', 'medium', 'high', 'xhigh'],
+			defaultReasoningEffort: 'medium',
+			additionalSpeedTiers: [],
+			isDefault: false
+		}
+	];
+	const reasoningOptions: Array<{ effort: ReasoningEffort; label: string }> = [
+		{ effort: 'low', label: '低' },
+		{ effort: 'medium', label: '中' },
+		{ effort: 'high', label: '高' },
+		{ effort: 'xhigh', label: '超高' }
+	];
 	// ── Derived ──
 	const selectedPermission = $derived(
 		permissionOptions.find((option) => option.mode === permissionMode) ?? permissionOptions[0]
 	);
+	const availableModels = $derived(models.length > 0 ? models : fallbackModels);
+	const selectedModel = $derived.by(() => {
+		return (
+			availableModels.find((model) => model.id === selectedModelId || model.model === selectedModelId) ??
+			availableModels.find((model) => model.isDefault) ??
+			availableModels[0] ??
+			fallbackModels[0]
+		);
+	});
+	const selectedReasoningLabel = $derived(
+		reasoningOptions.find((option) => option.effort === reasoningEffort)?.label ?? reasoningEffort
+	);
+	const supportsFastTier = $derived(selectedModel.additionalSpeedTiers.includes('fast'));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
 		const options = new Set<string>();
@@ -247,6 +346,31 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	});
 
 	$effect(() => {
+		if (typeof localStorage === 'undefined') return;
+		const savedModel = localStorage.getItem('modelSelection.model');
+		const savedEffort = localStorage.getItem('modelSelection.effort') as ReasoningEffort | null;
+		const savedTier = localStorage.getItem('modelSelection.serviceTier') as ServiceTier | null;
+		if (savedModel) selectedModelId = savedModel;
+		if (isReasoningEffort(savedEffort)) reasoningEffort = savedEffort;
+		serviceTier = savedTier === 'fast' || savedTier === 'flex' ? savedTier : null;
+	});
+
+	$effect(() => {
+		if (!authenticated || modelsLoaded) return;
+		modelsLoaded = true;
+		void loadModels();
+	});
+
+	$effect(() => {
+		if (!selectedModel.supportedReasoningEfforts.includes(reasoningEffort)) {
+			reasoningEffort = selectedModel.defaultReasoningEffort;
+		}
+		if (serviceTier === 'fast' && !supportsFastTier) {
+			serviceTier = null;
+		}
+	});
+
+	$effect(() => {
 		if (!authenticated || typeof localStorage === 'undefined' || sidebarCollapseRestored) return;
 		const saved = localStorage.getItem('sidebarCollapsed');
 		if (saved === 'true' || saved === 'false') {
@@ -294,6 +418,67 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 	}
 
+	function isReasoningEffort(value: unknown): value is ReasoningEffort {
+		return value === 'none' ||
+			value === 'minimal' ||
+			value === 'low' ||
+			value === 'medium' ||
+			value === 'high' ||
+			value === 'xhigh';
+	}
+
+	async function loadModels() {
+		try {
+			const payload = await readJson<{ models: ModelOption[] }>(await fetch('/api/models'));
+			if (payload.models.length > 0) models = payload.models;
+		} catch {
+			// Keep the local fallback list when an older app-server cannot list models.
+		}
+	}
+
+	function persistModelSelection() {
+		if (typeof localStorage === 'undefined') return;
+		localStorage.setItem('modelSelection.model', selectedModelId);
+		localStorage.setItem('modelSelection.effort', reasoningEffort);
+		if (serviceTier) localStorage.setItem('modelSelection.serviceTier', serviceTier);
+		else localStorage.removeItem('modelSelection.serviceTier');
+	}
+
+	function selectModel(model: ModelOption) {
+		selectedModelId = model.id;
+		if (!model.supportedReasoningEfforts.includes(reasoningEffort)) {
+			reasoningEffort = model.defaultReasoningEffort;
+		}
+		if (serviceTier === 'fast' && !model.additionalSpeedTiers.includes('fast')) {
+			serviceTier = null;
+		}
+		modelListOpen = false;
+		persistModelSelection();
+	}
+
+	function selectReasoningEffort(effort: ReasoningEffort) {
+		reasoningEffort = effort;
+		persistModelSelection();
+	}
+
+	function selectServiceTier(tier: ServiceTier | null) {
+		serviceTier = tier;
+		speedListOpen = false;
+		persistModelSelection();
+	}
+
+	function modelSelectionPayload(): ModelSelection {
+		return {
+			model: selectedModel.model,
+			effort: reasoningEffort,
+			serviceTier
+		};
+	}
+
+	function modelShortName(model: ModelOption): string {
+		return model.displayName.replace(/^GPT-/i, '').replace(/^gpt-/i, '').replace(/-Codex/i, '');
+	}
+
 	function isMobileViewport() {
 		return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
 	}
@@ -319,6 +504,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function threadHref(threadId: string | null): string {
 		if (!threadId) return '/';
 		return `/?${new URLSearchParams({ thread: threadId }).toString()}`;
+	}
+
+	function mergeThreadSummaries(
+		freshThreads: ThreadSummary[],
+		...localThreads: Array<ThreadSummary | null | undefined>
+	) {
+		const seen = new Set(freshThreads.map((thread) => thread.id));
+		const preserved = localThreads.filter(
+			(thread): thread is ThreadSummary => Boolean(thread && !seen.has(thread.id))
+		);
+		return [...preserved, ...freshThreads];
 	}
 
 	function isThreadNotFound(error: unknown) {
@@ -827,7 +1023,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	async function loadThreads() {
 		const payload = await readJson<{ threads: ThreadSummary[] }>(await fetch('/api/threads'));
 		bootErrorMessage = null;
-		threads = payload.threads;
+		const localSelection =
+			selectedThread?.thread ?? threads.find((thread) => thread.id === selectedThreadId);
+		threads = mergeThreadSummaries(payload.threads, localSelection);
 	}
 
 	type ScrollSnapshot = { mode: 'window' | 'element'; top: number; stickToBottom: boolean };
@@ -890,7 +1088,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const prompt = newPrompt.trim();
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode }) }));
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode, modelSelection: modelSelectionPayload() }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
 			draftingThread = false;
@@ -919,6 +1117,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	async function sendReply() {
 		if (!selectedThread || !replyPrompt.trim()) return;
 		if (interruptableTurnId) { errorMessage = 'This turn is still running. Stop it before sending another reply.'; return; }
+		const thread = selectedThread;
 		const prompt = replyPrompt.trim();
 		submitting = true;
 		followLiveOutput = true;
@@ -928,7 +1127,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		await tick();
 		scrollMainTo('bottom', 'auto');
 		try {
-			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt, permissionMode }) }));
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${thread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: thread.thread.cwd, prompt, permissionMode, modelSelection: modelSelectionPayload() }) }));
 			bootErrorMessage = null;
 		} catch (error) { removeOptimisticTurn(optimisticTurnId); replyPrompt = prompt; errorMessage = error instanceof Error ? error.message : String(error); }
 		finally { submitting = false; }
@@ -1199,6 +1398,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	$effect(() => {
 		if (!authenticated) return;
 		if (!allThreads.length) {
+			if (selectedThread) return;
 			selectedThreadId = null;
 			selectedThread = null;
 			approvals = [];
@@ -1208,6 +1408,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			return;
 		}
 		if (selectedThreadId && !allThreads.some(t => t.id === selectedThreadId)) {
+			if (selectedThread?.thread.id === selectedThreadId) {
+				threads = mergeThreadSummaries(threads, selectedThread.thread);
+				return;
+			}
 			selectedThreadId = null;
 			selectedThread = null;
 			approvals = [];
@@ -1242,7 +1446,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			class="permission-trigger"
 			aria-haspopup="menu"
 			aria-expanded={permissionMenuOpen}
-			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; }}
+			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; modelMenuOpen = false; }}
 		>
 			<span class="permission-trigger-icon">{@render permissionIcon(selectedPermission.mode)}</span>
 			<span>{selectedPermission.label}</span>
@@ -1279,6 +1483,146 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	</div>
 {/snippet}
 
+{#snippet speedIcon()}
+	<svg viewBox="0 0 20 20" aria-hidden="true" fill="currentColor">
+		<path d="M10.8 1.9 3.2 11.1c-.35.42-.05 1.06.5 1.06h4.08l-1.12 5.34c-.15.72.76 1.14 1.2.56l7.14-9.38c.32-.42.02-1.02-.51-1.02h-3.86l1.28-5.17c.17-.7-.65-1.15-1.11-.6Z" />
+	</svg>
+{/snippet}
+
+{#snippet modelPicker()}
+	<div class="model-picker">
+		<button
+			type="button"
+			class="model-trigger"
+			aria-haspopup="menu"
+			aria-expanded={modelMenuOpen}
+			onclick={(event) => { event.stopPropagation(); modelMenuOpen = !modelMenuOpen; permissionMenuOpen = false; }}
+		>
+			{#if serviceTier === 'fast'}
+				<span class="model-trigger-icon">{@render speedIcon()}</span>
+			{/if}
+			<span class="model-trigger-copy">
+				<span>{modelShortName(selectedModel)}</span>
+				<small>{selectedReasoningLabel}</small>
+			</span>
+			<svg class="model-chevron" viewBox="0 0 20 20" aria-hidden="true">
+				<path d="M6 8 10 12 14 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+		{#if modelMenuOpen}
+			<div
+				class="model-menu"
+				role="menu"
+				tabindex="-1"
+				onclick={(event) => event.stopPropagation()}
+				onkeydown={(event) => { if (event.key === 'Escape') modelMenuOpen = false; }}
+			>
+				<div class="model-menu-label">智能</div>
+				<div class="model-choice-list">
+					{#each reasoningOptions as option}
+						<button
+							type="button"
+							class="model-option compact"
+							class:selected={reasoningEffort === option.effort}
+							disabled={!selectedModel.supportedReasoningEfforts.includes(option.effort)}
+							role="menuitemradio"
+							aria-checked={reasoningEffort === option.effort}
+							onclick={() => selectReasoningEffort(option.effort)}
+						>
+							<span>{option.label}</span>
+							{#if reasoningEffort === option.effort}
+								<svg class="model-check" viewBox="0 0 20 20" aria-hidden="true">
+									<path d="M4 10.5 8 14 16 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+								</svg>
+							{/if}
+						</button>
+					{/each}
+				</div>
+				<div class="model-menu-divider"></div>
+				<button
+					type="button"
+					class="model-option submenu"
+					aria-expanded={modelListOpen}
+					onclick={() => { modelListOpen = !modelListOpen; speedListOpen = false; }}
+				>
+					<span>{selectedModel.displayName}</span>
+					<svg class="model-submenu-chevron" viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M8 5.5 12.5 10 8 14.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+				{#if modelListOpen}
+					<div class="model-sublist">
+						{#each availableModels as model (model.id)}
+							<button
+								type="button"
+								class="model-option nested"
+								class:selected={selectedModel.id === model.id}
+								onclick={() => selectModel(model)}
+							>
+								<span class="model-option-copy">
+									<span>{model.displayName}</span>
+									<small>{model.description}</small>
+								</span>
+								{#if selectedModel.id === model.id}
+									<svg class="model-check" viewBox="0 0 20 20" aria-hidden="true">
+										<path d="M4 10.5 8 14 16 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+									</svg>
+								{/if}
+							</button>
+						{/each}
+					</div>
+				{/if}
+				<button
+					type="button"
+					class="model-option submenu"
+					aria-expanded={speedListOpen}
+					onclick={() => { speedListOpen = !speedListOpen; modelListOpen = false; }}
+				>
+					{#if serviceTier === 'fast'}
+						<span class="model-option-icon">{@render speedIcon()}</span>
+					{/if}
+					<span>速度</span>
+					<svg class="model-submenu-chevron" viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M8 5.5 12.5 10 8 14.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+				{#if speedListOpen}
+					<div class="model-sublist">
+						<button
+							type="button"
+							class="model-option nested"
+							class:selected={serviceTier === null}
+							onclick={() => selectServiceTier(null)}
+						>
+							<span>标准</span>
+							{#if serviceTier === null}
+								<svg class="model-check" viewBox="0 0 20 20" aria-hidden="true">
+									<path d="M4 10.5 8 14 16 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+								</svg>
+							{/if}
+						</button>
+						<button
+							type="button"
+							class="model-option nested"
+							class:selected={serviceTier === 'fast'}
+							disabled={!supportsFastTier}
+							onclick={() => selectServiceTier('fast')}
+						>
+							<span class="model-option-icon">{@render speedIcon()}</span>
+							<span>速度优先</span>
+							{#if serviceTier === 'fast'}
+								<svg class="model-check" viewBox="0 0 20 20" aria-hidden="true">
+									<path d="M4 10.5 8 14 16 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+								</svg>
+							{/if}
+						</button>
+					</div>
+				{/if}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
 {#snippet sendIcon()}
 	<svg viewBox="0 0 20 20" aria-hidden="true">
 		<path d="M10 16V4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
@@ -1293,8 +1637,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 {/snippet}
 
 <svelte:window
-	onclick={() => { permissionMenuOpen = false; }}
-	onkeydown={(event) => { if (event.key === 'Escape') permissionMenuOpen = false; }}
+	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
+	onkeydown={(event) => { if (event.key === 'Escape') { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; } }}
 />
 
 {#if !authenticated}
@@ -1448,6 +1792,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								></textarea>
 								<div class="prompt-toolbar">
 									<div class="prompt-toolbar-left">
+										{@render modelPicker()}
 										{@render permissionPicker()}
 									</div>
 									<button
@@ -1524,6 +1869,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							></textarea>
 							<div class="prompt-toolbar">
 								<div class="prompt-toolbar-left">
+									{@render modelPicker()}
 									{@render permissionPicker()}
 								</div>
 								<div class="prompt-toolbar-right">

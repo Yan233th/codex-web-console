@@ -4,6 +4,8 @@
 
 一个轻量、本地优先的 Codex Web 控制台。
 
+npm 包地址：https://www.npmjs.com/package/codex-web-console
+
 ## 当前范围
 
 - 仅本地运行：连接单个本地 `codex app-server`
@@ -22,6 +24,27 @@
 ```sh
 bun install
 bun run dev
+```
+
+## 快速开始
+
+使用 npx 启动控制台：
+
+```sh
+npx codex-web-console
+```
+
+可选参数：
+
+```sh
+npx codex-web-console --host 127.0.0.1 --port 3000 --no-open
+```
+
+在当前仓库本地测试：
+
+```sh
+bun run build
+npx . --no-open
 ```
 
 ## 认证
@@ -50,6 +73,7 @@ bun run build
 
 ## 环境要求
 
+- `PATH` 中必须可以访问 Bun
 - `PATH` 中必须可以访问 Codex
 - UI 会启动并连接一个本地 `codex app-server`
 - 非开发环境必须配置访问 token
