@@ -53,7 +53,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let selectedThread = $state<ThreadDetail | null>(null);
 	let liveEntries = $state<Record<string, TimelineEntry>>({});
 	let liveEntryBuffers = $state<Record<string, Record<string, TimelineEntry>>>({});
-	let runtimeReasoning = $state<Record<string, TimelineEntry[]>>({});
 	let approvals = $state<ApprovalRequest[]>([]);
 	let browserOpen = $state(false);
 	let listing = $state<DirectoryListing | null>(null);
@@ -226,9 +225,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (id && visibleThreads.some((t) => t.id === id)) return id;
 		return visibleThreads[0]?.id ?? null;
 	});
-	const runtimeReasoningList = $derived(
-		visibleSelectedThreadId ? (runtimeReasoning[visibleSelectedThreadId] ?? []) : []
-	);
 	const visibleSelectedThread = $derived.by(() => {
 		if (selectedThread?.thread.id === visibleSelectedThreadId) return selectedThread;
 		if (data.selectedThread?.thread.id === visibleSelectedThreadId) return data.selectedThread;
@@ -286,13 +282,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const selectedSummary = $derived(
 		visibleThreads.find((t) => t.id === visibleSelectedThreadId) ?? null
 	);
-	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
+	const historicalTurns = $derived.by(() =>
+		(visibleSelectedThread?.turns ?? []).map((turn) =>
+			isActiveTurn(turn) ? turn : { ...turn, entries: turn.entries.filter((entry) => entry.kind !== 'reasoning') }
+		)
+	);
 	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
 	const visibleLiveEntryList = $derived.by(() =>
-		filterHistoricalLiveEntries(Object.values(liveEntries), visibleSelectedThread)
-	);
-	const visiblePreservedEntryList = $derived.by(() =>
-		filterHistoricalLiveEntries(runtimeReasoningList, visibleSelectedThread)
+		filterHistoricalLiveEntries(Object.values(liveEntries), visibleSelectedThread).filter(hasRenderableLiveEntry)
 	);
 	let runningTurnId = $state<string | null>(null);
 	const historicalRunningTurnId = $derived.by(() => findActiveTurnId(visibleSelectedThread));
@@ -739,6 +736,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return entry.kind === 'reasoning';
 	}
 
+	function hasRuntimeReasoningContent(entry: TimelineEntry) {
+		return entry.kind === 'reasoning' && Boolean(entry.text?.trim());
+	}
+
+	function hasRenderableLiveEntry(entry: TimelineEntry) {
+		return !isRuntimeOnlyEntry(entry) || hasRuntimeReasoningContent(entry);
+	}
+
 	function isHistoricalLiveEntry(
 		entry: TimelineEntry,
 		historicalIds: Set<string>,
@@ -747,11 +752,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	) {
 		if (historicalIds.has(entry.id)) return true;
 		if (entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) return true;
-		return Boolean(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
+		return Boolean(entry.turnId && settledTurnIds.has(entry.turnId));
 	}
 
 	function filterHistoricalLiveEntries(entries: TimelineEntry[], detail: ThreadDetail | null) {
-		if (!detail) return entries;
+		if (!detail) return entries.filter(hasRenderableLiveEntry);
 		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
 		const settledTurnIds = settledHistoricalTurnIds(detail);
 		const historicalUserTexts = new Set(
@@ -816,7 +821,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const keepEntry = ([itemId, entry]: [string, TimelineEntry]) =>
 			!historicalIds.has(itemId) &&
 			!(entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) &&
-			!(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
+			!(entry.turnId && settledTurnIds.has(entry.turnId)) &&
+			hasRenderableLiveEntry(entry);
 
 		if (detail.thread.id === selectedThreadId) {
 			liveEntries = Object.fromEntries(Object.entries(liveEntries).filter(keepEntry));
@@ -830,15 +836,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			};
 		}
 
-		const preserved = runtimeReasoning[detail.thread.id];
-		if (preserved) {
-			runtimeReasoning = {
-				...runtimeReasoning,
-				[detail.thread.id]: preserved.filter((entry) =>
-					!isHistoricalLiveEntry(entry, historicalIds, settledTurnIds, new Set())
-				)
-			};
-		}
 	}
 
 	function updateThreadUrl(threadId: string | null) {
@@ -985,16 +982,22 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		let changed = false;
 		const completedAt = Date.now();
 		const next = Object.fromEntries(
-			Object.entries(entries).map(([itemId, entry]) => {
-				if (entry.turnId !== turnId || entry.completedAt) return [itemId, entry];
+			Object.entries(entries).flatMap(([itemId, entry]) => {
+				if (entry.turnId !== turnId || entry.completedAt) return [[itemId, entry]];
+				if (entry.kind === 'reasoning') {
+					changed = true;
+					return [];
+				}
 				changed = true;
 				return [
-					itemId,
-					mergeEntry(entry, {
-						status: entry.kind === 'command' ? 'completed' : entry.status,
-						completedAt,
-						durationMs: entry.startedAt ? completedAt - entry.startedAt : entry.durationMs
-					})
+					[
+						itemId,
+						mergeEntry(entry, {
+							status: entry.kind === 'command' ? 'completed' : entry.status,
+							completedAt,
+							durationMs: entry.startedAt ? completedAt - entry.startedAt : entry.durationMs
+						})
+					]
 				];
 			})
 		);
@@ -1004,15 +1007,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		} else {
 			liveEntryBuffers = { ...liveEntryBuffers, [threadId]: next };
 		}
-	}
-
-	function rememberRuntimeReasoning(threadId: string) {
-		flushQueuedLiveEntryUpdates();
-		const entries = Object.values(liveEntries).filter(e => e.kind === 'reasoning' && e.text?.trim());
-		if (!entries.length) return;
-		const merged = new Map((runtimeReasoning[threadId] ?? []).map(e => [e.id, e] as const));
-		for (const e of entries) merged.set(e.id, e);
-		runtimeReasoning = { ...runtimeReasoning, [threadId]: [...merged.values()] };
 	}
 
 	async function readJson<T>(response: Response): Promise<T> {
@@ -1048,7 +1042,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const silent = options.silent ?? false;
 		const snapshot = silent ? captureScrollSnapshot() : null;
 		if (!silent) loadingThread = true;
-		else rememberRuntimeReasoning(threadId);
 		try {
 			const keepFullHistory =
 				options.full ??
@@ -1916,9 +1909,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					<div class="detail-body">
 						<div class="detail-body-inner">
 							<Timeline
-								turns={visibleSelectedThread?.turns ?? []}
+								turns={historicalTurns}
 								liveEntries={visibleLiveEntryList}
-								preservedEntries={visiblePreservedEntryList}
 								{approvals}
 								omittedTurnCount={visibleSelectedThread?.omittedTurnCount ?? 0}
 								onLoadFullHistory={() => {
