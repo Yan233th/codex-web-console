@@ -486,7 +486,8 @@ class LocalCodexService {
 	private async start(): Promise<void> {
 		this.process = spawn('codex', ['app-server', '--listen', 'stdio://'], {
 			stdio: 'pipe',
-			env: process.env
+			env: process.env,
+			shell: process.platform === 'win32'
 		});
 
 		this.process.stdout.on('data', (chunk: Buffer) => {

@@ -3,7 +3,11 @@
 	"private": true,
 	"version": "0.0.1",
 	"type": "module",
+	"bin": {
+		"codex-web-console": "./bin/codex-web-console.js"
+	},
 	"scripts": {
+		"start": "vite dev --host 127.0.0.1 --open",
 		"dev": "vite dev --host 127.0.0.1",
 		"build": "vite build",
 		"preview": "vite preview --host 127.0.0.1",

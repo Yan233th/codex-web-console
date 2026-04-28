@@ -12,41 +12,26 @@
 	} = $props();
 
 	function formatRelativeTime(timestamp: number | null): string {
-		if (!timestamp || !Number.isFinite(timestamp)) {
-			return 'unknown';
-		}
-
-		const deltaSeconds = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
-
-		if (deltaSeconds < 60) {
-			return 'just now';
-		}
-
-		const minutes = Math.floor(deltaSeconds / 60);
-		if (minutes < 60) {
-			return `${minutes}m ago`;
-		}
-
-		const hours = Math.floor(minutes / 60);
-		if (hours < 24) {
-			return `${hours}h ago`;
-		}
-
-		const days = Math.floor(hours / 24);
-		if (days < 7) {
-			return `${days}d ago`;
-		}
-
+		if (!timestamp || !Number.isFinite(timestamp)) return 'unknown';
+		const delta = Math.max(0, Math.floor((Date.now() - timestamp) / 1000));
+		if (delta < 60) return 'just now';
+		const m = Math.floor(delta / 60);
+		if (m < 60) return `${m}m ago`;
+		const h = Math.floor(m / 60);
+		if (h < 24) return `${h}h ago`;
+		const d = Math.floor(h / 24);
+		if (d < 7) return `${d}d ago`;
 		return new Date(timestamp).toLocaleDateString();
+	}
+
+	function statusClass(status: string): string {
+		if (status === 'active' || status.startsWith('active')) return 'active';
+		if (status === 'systemError') return 'error';
+		return '';
 	}
 </script>
 
 <section class="thread-list">
-	<div class="sidebar-header">
-		<p class="eyebrow">Threads</p>
-		<p class="sidebar-copy">{threads.length} loaded</p>
-	</div>
-
 	<div class="thread-items">
 		{#if threads.length === 0}
 			<p class="empty">No threads yet.</p>
@@ -58,14 +43,14 @@
 					class="thread-item"
 					onclick={() => onSelect(thread.id)}
 				>
-					<strong class="thread-title">{thread.title}</strong>
-					<span class="thread-cwd">{thread.cwd}</span>
-					{#if thread.provider}
-						<small class="thread-provider">{thread.provider}</small>
-					{/if}
+					<span class="thread-title">{thread.title}</span>
+					<span class="thread-preview">{thread.preview || thread.cwd}</span>
 					<div class="thread-meta">
-						<small class="thread-status">{thread.status}</small>
-						<small class="thread-updated">{formatRelativeTime(thread.updatedAt)}</small>
+						<span class="status {statusClass(thread.status)}">
+							<span class="status-dot"></span>
+							{thread.status === 'idle' ? 'idle' : thread.status}
+						</span>
+						<span>{formatRelativeTime(thread.updatedAt)}</span>
 					</div>
 				</button>
 			{/each}

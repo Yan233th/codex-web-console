@@ -19,28 +19,25 @@
 				await goto(result.location, { invalidateAll: true });
 				return;
 			}
-
 			await update();
 		};
 	};
 </script>
 
-<section class="login-card">
-	<p class="eyebrow">Codex Web Console</p>
-	<h1>Enter access token</h1>
-	<p class="copy">No user system. One token. One doorway.</p>
+<section class="login-shell">
+	<div class="login-card">
+		<h1>Codex Web Console</h1>
+		<p>Enter your access token to continue.</p>
 
-	{#if !tokenConfigured}
-		<p class="warning">
-			Set <code>CODEX_WEB_CONSOLE_TOKEN</code> before logging in.
-		</p>
-	{:else if fallbackTokenActive}
-		<p class="warning">Dev fallback token is active.</p>
-	{/if}
+		{#if !tokenConfigured}
+			<p class="warning">
+				Set <code>CODEX_WEB_CONSOLE_TOKEN</code> before logging in.
+			</p>
+		{:else if fallbackTokenActive}
+			<p class="warning">Dev fallback token is active.</p>
+		{/if}
 
-	<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
-		<label class="field">
-			<span>Token</span>
+		<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
 			<input
 				name="token"
 				type="password"
@@ -48,12 +45,11 @@
 				spellcheck="false"
 				placeholder="Paste token"
 			/>
-		</label>
+			<button type="submit">Continue</button>
+		</form>
 
-		<button type="submit">Continue</button>
-	</form>
-
-	{#if loginError}
-		<p class="error">{loginError}</p>
-	{/if}
+		{#if loginError}
+			<p class="error">{loginError}</p>
+		{/if}
+	</div>
 </section>

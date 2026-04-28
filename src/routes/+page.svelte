@@ -37,6 +37,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	const authenticated = $derived(Boolean(data.authenticated));
 
+	// ── State ──
 	let threads = $state<ThreadSummary[]>([]);
 	let selectedThreadId = $state<string | null>(null);
 	let selectedThread = $state<ThreadDetail | null>(null);
@@ -64,48 +65,33 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let scrollRestoreLockUntil = $state(0);
 	let followLiveOutput = $state(true);
 	let liveConnectionState = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
+	// ── Derived ──
 	const liveEntryList = $derived(Object.values(liveEntries));
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
 		const options = new Set<string>();
-
 		for (const thread of allThreads) {
-			if (thread.provider) {
-				options.add(thread.provider);
-			}
+			if (thread.provider) options.add(thread.provider);
 		}
-
-		return ['all', ...[...options].sort((left, right) => left.localeCompare(right))];
+		return ['all', ...[...options].sort((a, b) => a.localeCompare(b))];
 	});
 	const visibleThreads = $derived(
 		providerFilter === 'all'
 			? allThreads
-			: allThreads.filter((thread) => thread.provider === providerFilter)
+			: allThreads.filter((t) => t.provider === providerFilter)
 	);
 	const visibleSelectedThreadId = $derived.by(() => {
-		if (selectedThreadId) {
-			return selectedThreadId;
-		}
-
-		const initialThreadId = data.selectedThread?.thread.id ?? null;
-		if (initialThreadId && visibleThreads.some((thread) => thread.id === initialThreadId)) {
-			return initialThreadId;
-		}
-
+		if (selectedThreadId) return selectedThreadId;
+		const id = data.selectedThread?.thread.id ?? null;
+		if (id && visibleThreads.some((t) => t.id === id)) return id;
 		return visibleThreads[0]?.id ?? null;
 	});
 	const runtimeReasoningList = $derived(
 		visibleSelectedThreadId ? (runtimeReasoning[visibleSelectedThreadId] ?? []) : []
 	);
 	const visibleSelectedThread = $derived.by(() => {
-		if (selectedThread?.thread.id === visibleSelectedThreadId) {
-			return selectedThread;
-		}
-
-		if (data.selectedThread?.thread.id === visibleSelectedThreadId) {
-			return data.selectedThread;
-		}
-
+		if (selectedThread?.thread.id === visibleSelectedThreadId) return selectedThread;
+		if (data.selectedThread?.thread.id === visibleSelectedThreadId) return data.selectedThread;
 		return null;
 	});
 	const visibleWorkspacePath = $derived(
@@ -114,58 +100,63 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const visibleErrorMessage = $derived(errorMessage ?? bootErrorMessage);
 	const showingDraftThread = $derived(draftingThread || (!visibleSelectedThread && !loadingThread));
 	const selectedSummary = $derived(
-		visibleThreads.find((thread) => thread.id === visibleSelectedThreadId) ?? null
+		visibleThreads.find((t) => t.id === visibleSelectedThreadId) ?? null
 	);
 	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
 	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
 	const fallbackRunningTurnId = $derived.by(() => {
 		const turns = visibleSelectedThread?.turns ?? [];
-		for (let index = turns.length - 1; index >= 0; index -= 1) {
-			if (turns[index].completedAt === null) {
-				return turns[index].id;
-			}
+		for (let i = turns.length - 1; i >= 0; i--) {
+			if (turns[i].completedAt === null) return turns[i].id;
 		}
-
 		return null;
 	});
 	let runningTurnId = $state<string | null>(null);
 	const interruptableTurnId = $derived(runningTurnId ?? fallbackRunningTurnId);
+
 	const liveConnectionWarning = $derived.by(() => {
-		if (!authenticated) {
-			return null;
-		}
-
-		if (liveConnectionState === 'connecting') {
-			return 'Connecting to live updates…';
-		}
-
-		if (liveConnectionState === 'reconnecting') {
-			return 'Live updates disconnected. Reconnecting…';
-		}
-
+		if (!authenticated) return null;
+		if (liveConnectionState === 'connecting') return 'Connecting…';
+		if (liveConnectionState === 'reconnecting') return 'Disconnected. Reconnecting…';
 		return null;
 	});
+
 	const enhanceRedirect: SubmitFunction = () => {
 		return async ({ result, update }) => {
 			if (result.type === 'redirect') {
 				await goto(result.location, { invalidateAll: true });
 				return;
 			}
-
 			await update();
 		};
 	};
 
-	function threadHref(threadId: string | null): string {
-		if (!threadId) {
-			return '/';
-		}
+	// ── Theme ──
+	let currentTheme = $state<'auto' | 'dark' | 'light'>('auto');
 
-		const params = new URLSearchParams({ thread: threadId });
-		return `/?${params.toString()}`;
+	$effect(() => {
+		const saved = typeof localStorage !== 'undefined' ? (localStorage.getItem('theme') as 'auto' | 'dark' | 'light') : null;
+		if (saved) currentTheme = saved;
+	});
+
+	function cycleTheme() {
+		const root = document.documentElement;
+		let next: typeof currentTheme;
+		if (currentTheme === 'auto') next = 'dark';
+		else if (currentTheme === 'dark') next = 'light';
+		else next = 'auto';
+		localStorage.setItem('theme', next);
+		root.classList.remove('light', 'dark');
+		if (next === 'dark') root.classList.add('dark');
+		else if (next === 'light') root.classList.add('light');
+		currentTheme = next;
+	}
+	function threadHref(threadId: string | null): string {
+		if (!threadId) return '/';
+		return `/?${new URLSearchParams({ thread: threadId }).toString()}`;
 	}
 
-	async function openThread(threadId: string | null): Promise<void> {
+	async function openThread(threadId: string | null) {
 		if (!threadId) {
 			selectedThreadId = null;
 			selectedThread = null;
@@ -175,86 +166,36 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			liveEntries = {};
 			approvals = [];
 			replyPrompt = '';
-			await goto(threadHref(null), {
-				keepFocus: true,
-				noScroll: true
-			});
+			await goto(threadHref(null), { keepFocus: true, noScroll: true });
 			return;
 		}
-
 		draftingThread = false;
 		selectedThreadId = threadId;
 		followLiveOutput = true;
 		errorMessage = null;
-		await goto(threadHref(threadId), {
-			keepFocus: true,
-			noScroll: true
-		});
+		await goto(threadHref(threadId), { keepFocus: true, noScroll: true });
 	}
 
-	function updateLiveEntry(
-		itemId: string,
-		threadId: string,
-		patch: Partial<TimelineEntry>,
-		defaults?: Pick<TimelineEntry, 'kind' | 'label'>
-	): void {
-		if (threadId !== selectedThreadId) {
-			return;
-		}
-
+	function updateLiveEntry(itemId: string, threadId: string, patch: Partial<TimelineEntry>, defaults?: Pick<TimelineEntry, 'kind' | 'label'>) {
+		if (threadId !== selectedThreadId) return;
 		const current = liveEntries[itemId];
-		const base =
-			current ??
-			(defaults
-				? {
-						id: itemId,
-						...defaults,
-						text: '',
-						output: ''
-					}
-				: {
-						id: itemId,
-						kind: 'system' as const,
-						label: 'System',
-						text: '',
-						output: ''
-					});
-
+		const base = current ?? (defaults ? { id: itemId, ...defaults, text: '', output: '' } : { id: itemId, kind: 'system' as const, label: 'System', text: '', output: '' });
 		liveEntries = {
 			...liveEntries,
 			[itemId]: {
-				...base,
-				...patch,
-				text:
-					(base.kind === 'reasoning' || patch.kind === 'reasoning') && base.text && !patch.text
-						? base.text
-						: (patch.text ?? base.text ?? ''),
+				...base, ...patch,
+				text: (base.kind === 'reasoning' || patch.kind === 'reasoning') && base.text && !patch.text ? base.text : (patch.text ?? base.text ?? ''),
 				output: patch.output ?? base.output ?? ''
 			}
 		};
 	}
 
-	function rememberRuntimeReasoning(threadId: string): void {
-		const entries = Object.values(liveEntries).filter(
-			(entry) => entry.kind === 'reasoning' && entry.text?.trim()
-		);
-
-		if (entries.length === 0) {
-			return;
-		}
-
-		const merged = new Map(
-			(runtimeReasoning[threadId] ?? []).map((entry) => [entry.id, entry] as const)
-		);
-
-		for (const entry of entries) {
-			merged.set(entry.id, entry);
-		}
-
-		runtimeReasoning = {
-			...runtimeReasoning,
-			[threadId]: [...merged.values()]
-		};
+	function rememberRuntimeReasoning(threadId: string) {
+		const entries = Object.values(liveEntries).filter(e => e.kind === 'reasoning' && e.text?.trim());
+		if (!entries.length) return;
+		const merged = new Map((runtimeReasoning[threadId] ?? []).map(e => [e.id, e] as const));
+		for (const e of entries) merged.set(e.id, e);
+		runtimeReasoning = { ...runtimeReasoning, [threadId]: [...merged.values()] };
 	}
 
 	async function readJson<T>(response: Response): Promise<T> {
@@ -262,7 +203,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			const payload = (await response.json().catch(() => null)) as { error?: string } | null;
 			throw new Error(payload?.error ?? `Request failed: ${response.status}`);
 		}
-
 		return response.json() as Promise<T>;
 	}
 
@@ -277,226 +217,85 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		bootErrorMessage = data.codexError ? String(data.codexError) : null;
 	});
 
-	async function loadThreads(): Promise<void> {
+	async function loadThreads() {
 		const payload = await readJson<{ threads: ThreadSummary[] }>(await fetch('/api/threads'));
 		bootErrorMessage = null;
 		threads = payload.threads;
 	}
 
-	type ScrollSnapshot =
-		| {
-				mode: 'window';
-				top: number;
-				stickToBottom: boolean;
-		  }
-		| {
-				mode: 'element';
-				top: number;
-				stickToBottom: boolean;
-		  };
+	type ScrollSnapshot = { mode: 'window' | 'element'; top: number; stickToBottom: boolean };
 
-	function captureScrollSnapshot(): ScrollSnapshot | null {
-		if (!mainScroller) {
-			return null;
-		}
-
-		if (getComputedStyle(mainScroller).overflowY === 'visible') {
-			const top = window.scrollY;
-			const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-			return {
-				mode: 'window',
-				top,
-				stickToBottom: maxTop - top < 80
-			};
-		}
-
-		const top = mainScroller.scrollTop;
-		const maxTop = Math.max(0, mainScroller.scrollHeight - mainScroller.clientHeight);
-		return {
-			mode: 'element',
-			top,
-			stickToBottom: maxTop - top < 80
-		};
-	}
-
-	function restoreScrollSnapshot(snapshot: ScrollSnapshot | null): void {
-		if (!snapshot || !mainScroller) {
-			return;
-		}
-
-		scrollRestoreLockUntil = Date.now() + 300;
-
-		if (snapshot.mode === 'window') {
-			window.scrollTo({
-				top: snapshot.stickToBottom ? document.documentElement.scrollHeight : snapshot.top,
-				behavior: 'auto'
-			});
-			return;
-		}
-
-		mainScroller.scrollTo({
-			top: snapshot.stickToBottom ? mainScroller.scrollHeight : snapshot.top,
-			behavior: 'auto'
-		});
-	}
-
-	function isNearBottom(): boolean {
-		if (!mainScroller) {
-			return true;
-		}
-
-		if (getComputedStyle(mainScroller).overflowY === 'visible') {
-			const maxTop = Math.max(0, document.documentElement.scrollHeight - window.innerHeight);
-			return maxTop - window.scrollY < 96;
-		}
-
-		const maxTop = Math.max(0, mainScroller.scrollHeight - mainScroller.clientHeight);
-		return maxTop - mainScroller.scrollTop < 96;
-	}
-
-	async function loadThread(
-		threadId: string,
-		options: { silent?: boolean } = {}
-	): Promise<void> {
+	async function loadThread(threadId: string, options: { silent?: boolean } = {}) {
 		const silent = options.silent ?? false;
 		const snapshot = silent ? captureScrollSnapshot() : null;
-
-		if (!silent) {
-			loadingThread = true;
-		} else {
-			rememberRuntimeReasoning(threadId);
-		}
-
+		if (!silent) loadingThread = true;
+		else rememberRuntimeReasoning(threadId);
 		try {
-			const payload = await readJson<{ detail: ThreadDetail }>(
-				await fetch(`/api/threads/${threadId}`)
-			);
+			const payload = await readJson<{ detail: ThreadDetail }>(await fetch(`/api/threads/${threadId}`));
 			bootErrorMessage = null;
 			errorMessage = null;
 			selectedThread = payload.detail;
 			approvals = payload.detail.approvals;
 			liveEntries = {};
-
 			if (silent) {
 				await tick();
 				restoreScrollSnapshot(snapshot);
-				await new Promise<void>((resolve) => {
-					requestAnimationFrame(() => {
-						restoreScrollSnapshot(snapshot);
-						resolve();
-					});
-				});
+				await new Promise<void>(r => requestAnimationFrame(() => { restoreScrollSnapshot(snapshot); r(); }));
 			}
 		} catch (error) {
 			errorMessage = error instanceof Error ? error.message : String(error);
 		} finally {
-			if (!silent) {
-				loadingThread = false;
-			}
+			if (!silent) loadingThread = false;
 		}
 	}
 
-	async function openBrowser(path: string): Promise<void> {
-		const payload = await readJson<{ listing: DirectoryListing }>(
-			await fetch(`/api/fs?path=${encodeURIComponent(path)}`)
-		);
+	async function openBrowser(path: string) {
+		const payload = await readJson<{ listing: DirectoryListing }>(await fetch(`/api/fs?path=${encodeURIComponent(path)}`));
 		listing = payload.listing;
 		browserOpen = true;
 	}
 
-	async function createThread(): Promise<void> {
-		if (!workspacePath.trim() || !newPrompt.trim()) {
-			errorMessage = 'Workspace path and prompt are required.';
-			return;
-		}
-
+	async function createThread() {
+		if (!workspacePath.trim() || !newPrompt.trim()) { errorMessage = 'Workspace path and prompt are required.'; return; }
 		submitting = true;
 		errorMessage = null;
-
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(
-				await fetch('/api/threads', {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						cwd: workspacePath,
-						prompt: newPrompt
-					})
-				})
-			);
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt: newPrompt }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
 			draftingThread = false;
 			await loadThreads();
 			await openThread(payload.thread.id);
-		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : String(error);
-		} finally {
-			submitting = false;
-		}
+		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		finally { submitting = false; }
 	}
 
-	async function sendReply(): Promise<void> {
-		if (!selectedThread || !replyPrompt.trim()) {
-			return;
-		}
-
-		if (interruptableTurnId) {
-			errorMessage = 'This turn is still running. Stop it before sending another reply.';
-			return;
-		}
-
+	async function sendReply() {
+		if (!selectedThread || !replyPrompt.trim()) return;
+		if (interruptableTurnId) { errorMessage = 'This turn is still running. Stop it before sending another reply.'; return; }
 		submitting = true;
 		followLiveOutput = true;
 		errorMessage = null;
-
 		try {
-			await readJson<{ ok: true }>(
-				await fetch(`/api/threads/${selectedThread.thread.id}/messages`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						cwd: selectedThread.thread.cwd,
-						prompt: replyPrompt
-					})
-				})
-			);
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt: replyPrompt }) }));
 			bootErrorMessage = null;
 			replyPrompt = '';
-		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : String(error);
-		} finally {
-			submitting = false;
-		}
+		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		finally { submitting = false; }
 	}
 
-	async function interruptCurrentTurn(): Promise<void> {
-		if (!selectedThread || !interruptableTurnId) {
-			return;
-		}
-
+	async function interruptCurrentTurn() {
+		if (!selectedThread || !interruptableTurnId) return;
 		interrupting = true;
 		errorMessage = null;
-
 		try {
-			await readJson<{ ok: true }>(
-				await fetch(`/api/threads/${selectedThread.thread.id}/interrupt`, {
-					method: 'POST',
-					headers: { 'Content-Type': 'application/json' },
-					body: JSON.stringify({
-						turnId: interruptableTurnId
-					})
-				})
-			);
-		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : String(error);
-		} finally {
-			interrupting = false;
-		}
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ turnId: interruptableTurnId }) }));
+		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		finally { interrupting = false; }
 	}
 
-	function startDraftThread(): void {
+	function startDraftThread() {
 		draftingThread = true;
 		followLiveOutput = true;
 		errorMessage = null;
@@ -508,330 +307,178 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		void openThread(null);
 	}
 
-	async function resolveApproval(
-		requestId: string,
-		decision: 'accept' | 'acceptForSession' | 'decline'
-	): Promise<void> {
-		await readJson<{ ok: true }>(
-			await fetch(`/api/approvals/${requestId}`, {
-				method: 'POST',
-				headers: { 'Content-Type': 'application/json' },
-				body: JSON.stringify({ decision })
-			})
-		);
+	async function resolveApproval(requestId: string, decision: 'accept' | 'acceptForSession' | 'decline') {
+		await readJson<{ ok: true }>(await fetch(`/api/approvals/${requestId}`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ decision }) }));
 		bootErrorMessage = null;
 	}
 
-	function submitOnEnter(event: KeyboardEvent, submit: () => void): void {
-		if (event.key !== 'Enter' || event.isComposing || event.shiftKey || event.ctrlKey) {
-			return;
-		}
-
+	function submitOnEnter(event: KeyboardEvent, submit: () => void) {
+		if (event.key !== 'Enter' || event.isComposing || event.shiftKey || event.ctrlKey) return;
 		event.preventDefault();
 		submit();
 	}
 
-	function scrollMainTo(position: 'top' | 'bottom', behavior: ScrollBehavior = 'smooth'): void {
-		if (!mainScroller) {
-			return;
-		}
+	function scrollTarget(): HTMLElement | Window {
+		if (!mainScroller) return window;
+		const body = mainScroller.querySelector<HTMLElement>('.detail-body');
+		if (body && getComputedStyle(body).overflowY !== 'visible') return body;
+		return window;
+	}
 
-		if (getComputedStyle(mainScroller).overflowY === 'visible') {
-			window.scrollTo({
-				top: position === 'top' ? 0 : document.documentElement.scrollHeight,
-				behavior
-			});
-			return;
+	function scrollMainTo(position: 'top' | 'bottom', behavior: ScrollBehavior = 'smooth') {
+		const target = scrollTarget();
+		if (target === window) {
+			window.scrollTo({ top: position === 'top' ? 0 : document.documentElement.scrollHeight, behavior });
+		} else {
+			target.scrollTo({ top: position === 'top' ? 0 : target.scrollHeight, behavior });
 		}
-
-		mainScroller.scrollTo({
-			top: position === 'top' ? 0 : mainScroller.scrollHeight,
-			behavior
-		});
 	}
 
 	function getHistoricalTurnElements(): HTMLElement[] {
-		if (!mainScroller) {
-			return [];
-		}
-
+		if (!mainScroller) return [];
 		return [...mainScroller.querySelectorAll<HTMLElement>('[data-turn-id]')];
 	}
 
 	function measureActiveTurnIndex(): number {
-		const turnElements = getHistoricalTurnElements();
-		if (turnElements.length === 0 || !mainScroller) {
-			return -1;
-		}
-
-		const threshold =
-			getComputedStyle(mainScroller).overflowY === 'visible'
-				? 24
-				: mainScroller.getBoundingClientRect().top + 24;
-
-		let nextIndex = 0;
-		for (const [index, element] of turnElements.entries()) {
-			if (element.getBoundingClientRect().top <= threshold) {
-				nextIndex = index;
-				continue;
-			}
-
+		const elements = getHistoricalTurnElements();
+		if (!elements.length || !mainScroller) return -1;
+		const target = scrollTarget();
+		const threshold = target === window ? 24 : (target as HTMLElement).getBoundingClientRect().top + 24;
+		let idx = 0;
+		for (const [i, el] of elements.entries()) {
+			if (el.getBoundingClientRect().top <= threshold) { idx = i; continue; }
 			break;
 		}
-
-		return nextIndex;
+		return idx;
 	}
 
-	function syncActiveTurnIndex(): void {
-		if (Date.now() < turnNavigationLockUntil) {
-			return;
-		}
-
-		const nextIndex = measureActiveTurnIndex();
-		if (nextIndex >= 0) {
-			activeTurnIndex = nextIndex;
-		}
+	function syncActiveTurnIndex() {
+		if (Date.now() < turnNavigationLockUntil) return;
+		const next = measureActiveTurnIndex();
+		if (next >= 0) activeTurnIndex = next;
 	}
 
-	function scrollTurnIntoView(index: number): void {
-		const turnElements = getHistoricalTurnElements();
-		const element = turnElements[index];
-		if (!element || !mainScroller) {
-			return;
-		}
-
+	function scrollTurnIntoView(index: number) {
+		const elements = getHistoricalTurnElements();
+		const el = elements[index];
+		if (!el || !mainScroller) return;
 		turnNavigationLockUntil = Date.now() + 450;
-
 		const offset = 24;
-		if (getComputedStyle(mainScroller).overflowY === 'visible') {
-			window.scrollTo({
-				top: window.scrollY + element.getBoundingClientRect().top - offset,
-				behavior: 'smooth'
-			});
+		const target = scrollTarget();
+		if (target === window) {
+			window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - offset, behavior: 'smooth' });
 		} else {
-			mainScroller.scrollTo({
-				top:
-					mainScroller.scrollTop +
-					element.getBoundingClientRect().top -
-					mainScroller.getBoundingClientRect().top -
-					offset,
-				behavior: 'smooth'
-			});
+			target.scrollTo({ top: target.scrollTop + el.getBoundingClientRect().top - target.getBoundingClientRect().top - offset, behavior: 'smooth' });
 		}
-
 		activeTurnIndex = index;
 	}
 
-	function jumpTurn(direction: 'previous' | 'next'): void {
-		const turnCount = historicalTurns.length;
-		if (turnCount === 0) {
-			return;
+	function captureScrollSnapshot(): ScrollSnapshot | null {
+		const target = scrollTarget();
+		if (target === window) {
+			const top = window.scrollY;
+			return { mode: 'window', top, stickToBottom: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) - top < 80 };
 		}
-
-		const targetIndex =
-			direction === 'previous'
-				? Math.max(0, activeTurnIndex - 1)
-				: Math.min(turnCount - 1, activeTurnIndex + 1);
-
-		scrollTurnIntoView(targetIndex);
+		const top = target.scrollTop;
+		return { mode: 'element', top, stickToBottom: Math.max(0, target.scrollHeight - target.clientHeight) - top < 80 };
 	}
 
-	function maybeFollowLiveOutput(threadId: string): void {
-		if (threadId !== selectedThreadId || !followLiveOutput) {
+	function restoreScrollSnapshot(snapshot: ScrollSnapshot | null) {
+		if (!snapshot || !mainScroller) return;
+		scrollRestoreLockUntil = Date.now() + 300;
+		if (snapshot.mode === 'window') {
+			window.scrollTo({ top: snapshot.stickToBottom ? document.documentElement.scrollHeight : snapshot.top, behavior: 'auto' });
 			return;
 		}
-
-		void tick().then(() => {
-			if (!followLiveOutput) {
-				return;
-			}
-
-			scrollMainTo('bottom', 'auto');
-		});
+		const target = scrollTarget();
+		if (target !== window) {
+			target.scrollTo({ top: snapshot.stickToBottom ? target.scrollHeight : snapshot.top, behavior: 'auto' });
+		}
 	}
 
-	function handleEvent(event: ConsoleEvent): void {
-		if (event.type === 'thread.started') {
-			void loadThreads();
-			return;
+	function isNearBottom(): boolean {
+		const target = scrollTarget();
+		if (target === window) {
+			return Math.max(0, document.documentElement.scrollHeight - window.innerHeight) - window.scrollY < 96;
 		}
+		return Math.max(0, target.scrollHeight - target.clientHeight) - target.scrollTop < 96;
+	}
 
+	function jumpTurn(dir: 'previous' | 'next') {
+		const n = getHistoricalTurnElements().length;
+		if (!n) return;
+		scrollTurnIntoView(dir === 'previous' ? Math.max(0, activeTurnIndex - 1) : Math.min(n - 1, activeTurnIndex + 1));
+	}
+
+	function maybeFollowLiveOutput(threadId: string) {
+		if (threadId !== selectedThreadId || !followLiveOutput) return;
+		void tick().then(() => { if (followLiveOutput) scrollMainTo('bottom', 'auto'); });
+	}
+
+	function handleEvent(event: ConsoleEvent) {
+		if (event.type === 'thread.started') { void loadThreads(); return; }
 		if (event.type === 'approval.requested') {
-			if (event.threadId === selectedThreadId) {
-				approvals = [...approvals.filter((item) => item.requestId !== event.approval.requestId), event.approval];
-			}
+			if (event.threadId === selectedThreadId) approvals = [...approvals.filter(a => a.requestId !== event.approval.requestId), event.approval];
 			return;
 		}
-
-		if (event.type === 'approval.resolved') {
-			approvals = approvals.filter((item) => item.requestId !== event.requestId);
-			return;
-		}
-
+		if (event.type === 'approval.resolved') { approvals = approvals.filter(a => a.requestId !== event.requestId); return; }
 		if (event.type === 'turn.completed') {
 			void loadThreads();
-			if (event.threadId === selectedThreadId) {
-				runningTurnId = null;
-				void loadThread(event.threadId, { silent: true });
-			}
+			if (event.threadId === selectedThreadId) { runningTurnId = null; void loadThread(event.threadId, { silent: true }); }
 			return;
 		}
-
-		if (event.type === 'turn.started') {
-			if (event.threadId === selectedThreadId) {
-				runningTurnId = event.turnId;
-			}
-			return;
-		}
-
-		if (event.type === 'item.started' || event.type === 'item.completed') {
-			updateLiveEntry(event.item.id, event.threadId, event.item);
-			maybeFollowLiveOutput(event.threadId);
-			return;
-		}
-
-		if (event.type === 'message.delta') {
-			const current = liveEntries[event.itemId];
-			updateLiveEntry(
-				event.itemId,
-				event.threadId,
-				{ text: `${current?.text ?? ''}${event.delta}` },
-				{ kind: 'assistant', label: 'Assistant' }
-			);
-			maybeFollowLiveOutput(event.threadId);
-			return;
-		}
-
-		if (event.type === 'reasoning.delta') {
-			const current = liveEntries[event.itemId];
-			updateLiveEntry(
-				event.itemId,
-				event.threadId,
-				{ text: `${current?.text ?? ''}${event.delta}` },
-				{ kind: 'reasoning', label: 'Reasoning' }
-			);
-			maybeFollowLiveOutput(event.threadId);
-			return;
-		}
-
-		if (event.type === 'command.delta') {
-			const current = liveEntries[event.itemId];
-			updateLiveEntry(
-				event.itemId,
-				event.threadId,
-				{ output: `${current?.output ?? ''}${event.delta}` },
-				{ kind: 'command', label: 'Command' }
-			);
-			maybeFollowLiveOutput(event.threadId);
-			return;
-		}
-
-		if (event.type === 'file_change.delta') {
-			const current = liveEntries[event.itemId];
-			updateLiveEntry(
-				event.itemId,
-				event.threadId,
-				{ text: `${current?.text ?? ''}${event.delta}` },
-				{ kind: 'file_change', label: 'File change' }
-			);
-			maybeFollowLiveOutput(event.threadId);
-			return;
-		}
-
-		if (event.type === 'error') {
-			errorMessage = event.message;
-		}
+		if (event.type === 'turn.started') { if (event.threadId === selectedThreadId) runningTurnId = event.turnId; return; }
+		if (event.type === 'item.started' || event.type === 'item.completed') { updateLiveEntry(event.item.id, event.threadId, event.item); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'message.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'assistant', label: 'Assistant' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'reasoning.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'command.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { output: `${c?.output ?? ''}${event.delta}` }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'file_change.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'error') errorMessage = event.message;
 	}
 
+	// ── Effects ──
 	$effect(() => {
 		source?.close();
 		source = null;
-
-		if (!authenticated) {
-			return;
-		}
-
-		const nextSource = new EventSource('/api/events');
+		if (!authenticated) return;
+		const next = new EventSource('/api/events');
 		liveConnectionState = source ? 'reconnecting' : 'connecting';
-		nextSource.onopen = () => {
-			liveConnectionState = 'live';
-		};
-		nextSource.onmessage = (raw) => {
-			handleEvent(JSON.parse(raw.data) as ConsoleEvent);
-		};
-		nextSource.onerror = () => {
-			liveConnectionState = 'reconnecting';
-		};
-
-		source = nextSource;
-
-		return () => {
-			nextSource.close();
-			if (source === nextSource) {
-				source = null;
-			}
-		};
+		next.onopen = () => { liveConnectionState = 'live'; };
+		next.onmessage = (raw) => { handleEvent(JSON.parse(raw.data) as ConsoleEvent); };
+		next.onerror = () => { liveConnectionState = 'reconnecting'; };
+		source = next;
+		return () => { next.close(); if (source === next) source = null; };
 	});
 
 	$effect(() => {
-		if (authenticated && selectedThreadId && selectedThread?.thread.id !== selectedThreadId) {
-			void loadThread(selectedThreadId);
-		}
+		if (authenticated && selectedThreadId && selectedThread?.thread.id !== selectedThreadId) void loadThread(selectedThreadId);
 	});
 
 	$effect(() => {
-		if (!authenticated || loadingThread || draftingThread) {
-			return;
-		}
-
-		const threadId = selectedThread?.thread.id ?? data.selectedThread?.thread.id ?? null;
-		if (!threadId || threadId === autoScrolledThreadId) {
-			return;
-		}
-
-		autoScrolledThreadId = threadId;
-		void tick().then(() => {
-			scrollMainTo('bottom');
-		});
+		if (!authenticated || loadingThread || draftingThread) return;
+		const id = selectedThread?.thread.id ?? data.selectedThread?.thread.id ?? null;
+		if (!id || id === autoScrolledThreadId) return;
+		autoScrolledThreadId = id;
+		void tick().then(() => scrollMainTo('bottom'));
 	});
 
 	$effect(() => {
-		if (!authenticated || !mainScroller || showingDraftThread) {
-			return;
-		}
-
-		const target =
-			getComputedStyle(mainScroller).overflowY === 'visible' ? window : mainScroller;
-		const handleScroll = () => {
-			if (Date.now() < scrollRestoreLockUntil) {
-				return;
-			}
-
+		if (!authenticated || !mainScroller || showingDraftThread) return;
+		const target = scrollTarget();
+		const handle = () => {
+			if (Date.now() < scrollRestoreLockUntil) return;
 			followLiveOutput = isNearBottom();
-			if (historicalTurns.length > 0) {
-				syncActiveTurnIndex();
-			}
+			if (historicalTurns.length > 0) syncActiveTurnIndex();
 		};
-
-		void tick().then(() => {
-			handleScroll();
-		});
-
-		target.addEventListener('scroll', handleScroll, { passive: true });
-		window.addEventListener('resize', handleScroll);
-
-		return () => {
-			target.removeEventListener('scroll', handleScroll);
-			window.removeEventListener('resize', handleScroll);
-		};
+		void tick().then(() => handle());
+		target.addEventListener('scroll', handle, { passive: true });
+		window.addEventListener('resize', handle);
+		return () => { target.removeEventListener('scroll', handle); window.removeEventListener('resize', handle); };
 	});
 
 	$effect(() => {
-		if (!authenticated) {
-			return;
-		}
-
-		if (allThreads.length === 0) {
+		if (!authenticated) return;
+		if (!allThreads.length) {
 			selectedThreadId = null;
 			selectedThread = null;
 			approvals = [];
@@ -839,8 +486,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			draftingThread = true;
 			return;
 		}
-
-		if (selectedThreadId && !allThreads.some((thread) => thread.id === selectedThreadId)) {
+		if (selectedThreadId && !allThreads.some(t => t.id === selectedThreadId)) {
 			selectedThreadId = null;
 			selectedThread = null;
 			approvals = [];
@@ -851,187 +497,143 @@ import type { SubmitFunction } from '@sveltejs/kit';
 </script>
 
 {#if !authenticated}
-	<div class="login-shell">
-		<LoginView
-			tokenConfigured={data.tokenConfigured}
-			fallbackTokenActive={data.fallbackTokenActive}
-			loginError={form?.loginError}
-		/>
-	</div>
+	<LoginView
+		tokenConfigured={data.tokenConfigured}
+		fallbackTokenActive={data.fallbackTokenActive}
+		loginError={form?.loginError}
+	/>
 {:else}
 	<div class:sidebar-collapsed={sidebarCollapsed} class="app-shell">
+		<!-- Sidebar -->
 		<aside class="sidebar">
-			<div class="brand">
+			<div class="sidebar-header">
 				<div>
-					<p class="eyebrow">Codex Web Console</p>
-					<h1>Local</h1>
+					<h1>Codex</h1>
+					<small>Web Console</small>
 				</div>
-				<div class="brand-actions">
+				<div class="sidebar-actions">
+					<button onclick={cycleTheme} title="Toggle theme" aria-label="Toggle theme">
+						<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
+							{#if currentTheme === 'auto'}
+								<!-- half moon + half sun -->
+								<path d="M17 12.7A7 7 0 1 1 7.3 3a7 7 0 0 0 4.7 14 7 7 0 0 0 5-4.3z" />
+								<circle cx="13" cy="9.5" r="1.5" />
+								<path d="M13 6v1M13 12v1M9.5 9.5h1M15.5 9.5h1" />
+							{:else if currentTheme === 'dark'}
+								<path d="M17 12.7A7 7 0 1 1 7.3 3a7 7 0 0 0 9.7 9.7z" />
+							{:else}
+								<circle cx="10" cy="10" r="4" />
+								<path d="M10 1.5v2M10 16.5v2M1.5 10h2M16.5 10h2M3.4 3.4l1.4 1.4M15.2 15.2l1.4 1.4M15.2 4.8l1.4-1.4M3.4 16.6l1.4-1.4" />
+							{/if}
+						</svg>
+					</button>
 					<button
-						type="button"
-						class="ghost floating-button sidebar-toggle-button"
-						onclick={() => {
-							sidebarCollapsed = true;
-						}}
-						aria-label="Collapse sidebar"
-						title="Collapse sidebar"
+						onclick={() => { sidebarCollapsed = true; }}
+						aria-label="Collapse sidebar" title="Collapse sidebar"
 					>
 						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path
-								d="M4.5 4.5h11v11h-11zM12 4.5v11M9 7.25 6.25 10 9 12.75"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.6"
-							/>
+							<path d="M4.5 4.5h11v11h-11zM12 4.5v11M9 7.25 6.25 10 9 12.75" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
 					</button>
 				</div>
 			</div>
 
-			<button type="button" class="sidebar-primary-action" onclick={startDraftThread}>
+			<button style="width:100%;justify-content:center" onclick={startDraftThread}>
 				New thread
 			</button>
 
-			<label class="field sidebar-filter">
-				<span>Provider</span>
-				<select bind:value={providerFilter}>
-					{#each providerOptions as provider}
-						<option value={provider}>
-							{provider === 'all' ? 'All providers' : provider}
-						</option>
-					{/each}
-				</select>
-			</label>
+			<select bind:value={providerFilter} style="font-size:12px">
+				{#each providerOptions as provider}
+					<option value={provider}>{provider === 'all' ? 'All providers' : provider}</option>
+				{/each}
+			</select>
 
 			<ThreadList
 				threads={visibleThreads}
 				selectedThreadId={draftingThread ? null : visibleSelectedThreadId}
-				onSelect={(threadId) => void openThread(threadId)}
+				onSelect={(id) => void openThread(id)}
 			/>
+
+			<div class="status-bar">
+				<span class="live-dot {liveConnectionState}" style="flex:0 0 auto"></span>
+				<span style="flex:1">{liveConnectionState === 'live' ? 'Connected' : liveConnectionState === 'connecting' ? 'Connecting…' : 'Reconnecting…'}</span>
+			</div>
 		</aside>
 
-		{#if sidebarCollapsed}
-			<button
-				type="button"
-				class="ghost floating-button sidebar-reopen"
-				onclick={() => {
-					sidebarCollapsed = false;
-				}}
-				aria-label="Expand sidebar"
-				title="Expand sidebar"
-			>
-				<svg viewBox="0 0 20 20" aria-hidden="true">
-					<path
-						d="M4.5 4.5h11v11h-11zM8 4.5v11M11 7.25 13.75 10 11 12.75"
-						fill="none"
-						stroke="currentColor"
-						stroke-linecap="round"
-						stroke-linejoin="round"
-						stroke-width="1.6"
-					/>
-				</svg>
-			</button>
-		{/if}
-
 		<main bind:this={mainScroller} class="main">
-			<section class="thread-workspace detail-layout">
+			<div class="thread-workspace">
+				<!-- Header -->
 				<div class="detail-header">
 					<div>
-						<p class="eyebrow">{showingDraftThread ? 'New thread' : 'Thread'}</p>
-						<h2
-							class="detail-title"
-							title={showingDraftThread
-								? 'Start a conversation'
-								: (selectedSummary?.title ?? 'Nothing selected')}
-						>
-							{showingDraftThread
-								? 'Start a conversation'
-								: (selectedSummary?.title ?? 'Nothing selected')}
+						<h2 class="detail-title">
+							{showingDraftThread ? 'New thread' : (selectedSummary?.title ?? 'Nothing selected')}
 						</h2>
 						{#if !showingDraftThread && selectedSummary}
-							<p class="copy">{selectedSummary.cwd}</p>
-							{#if selectedSummary.provider}
-								<p class="detail-provider">{selectedSummary.provider}</p>
-							{/if}
-						{:else if showingDraftThread}
-							<p class="copy">Pick a workspace, write the first message, and start here.</p>
-						{/if}
-						{#if liveConnectionWarning}
-							<p class="warning workspace-warning">{liveConnectionWarning}</p>
+							<p class="detail-cwd">{selectedSummary.cwd}</p>
 						{/if}
 					</div>
 					{#if showingDraftThread}
-						<button
-							type="button"
-							class="ghost"
-							onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}
-						>
+						<button class="ghost" onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}>
 							Browse
 						</button>
 					{/if}
 				</div>
 
+				<!-- Body -->
 				{#if showingDraftThread}
-					<div class="detail-body compose-view">
+					<div class="compose-view">
 						<div class="compose-panel">
-							<label class="field">
-								<span>Workspace</span>
+							{#if liveConnectionWarning}
+								<p class="warning live-warning">{liveConnectionWarning}</p>
+							{/if}
+							{#if visibleErrorMessage}
+								<p class="error">{visibleErrorMessage}</p>
+							{/if}
+							<div>
+								<span class="compose-field-label">Workspace</span>
 								<input bind:value={workspacePath} spellcheck="false" />
-							</label>
-
-							<label class="field composer-prompt">
-								<span>Message</span>
+							</div>
+							<div>
+								<span class="compose-field-label">Message</span>
 								<textarea
 									bind:value={newPrompt}
-									rows="8"
-									onkeydown={(event) => submitOnEnter(event, () => void createThread())}
+									rows="6"
+									onkeydown={(e) => submitOnEnter(e, () => void createThread())}
 								></textarea>
-							</label>
-
-							<div class="compose-actions">
-								<button type="button" onclick={() => void createThread()} disabled={submitting}>
-									Start thread
-								</button>
 							</div>
-
-							{#if visibleErrorMessage}
-								<p class="error workspace-error">{visibleErrorMessage}</p>
-							{/if}
+							<button onclick={() => void createThread()} disabled={submitting}>
+								{submitting ? 'Starting…' : 'Start thread'}
+							</button>
 						</div>
 					</div>
 				{:else if loadingThread}
-					<p class="copy">Loading thread…</p>
+					<div class="detail-body">
+						<p class="empty">Loading thread…</p>
+					</div>
 				{:else}
 					<div class="detail-body">
-						<Timeline
-							turns={visibleSelectedThread?.turns ?? []}
-							liveEntries={liveEntryList}
-							preservedEntries={runtimeReasoningList}
-							{approvals}
-						/>
+						<div class="detail-body-inner">
+							<Timeline
+								turns={visibleSelectedThread?.turns ?? []}
+								liveEntries={liveEntryList}
+								preservedEntries={runtimeReasoningList}
+								{approvals}
+							/>
+						</div>
 					</div>
 
+					<!-- Approvals -->
 					{#if approvals.length > 0}
 						<div class="approval-actions">
 							{#each approvals as approval (approval.requestId)}
 								<div class="approval-buttons">
-									<button type="button" onclick={() => void resolveApproval(approval.requestId, 'accept')}>
+									<button onclick={() => void resolveApproval(approval.requestId, 'accept')}>
 										Allow once
 									</button>
-									<button
-										type="button"
-										class="ghost"
-										onclick={() => void resolveApproval(approval.requestId, 'acceptForSession')}
-									>
-										Allow for session
+									<button class="ghost" onclick={() => void resolveApproval(approval.requestId, 'acceptForSession')}>
+										Allow session
 									</button>
-									<button
-										type="button"
-										class="danger"
-										onclick={() => void resolveApproval(approval.requestId, 'decline')}
-									>
+									<button class="danger" onclick={() => void resolveApproval(approval.requestId, 'decline')}>
 										Decline
 									</button>
 								</div>
@@ -1040,166 +642,95 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					{/if}
 				{/if}
 
+				<!-- Reply -->
 				{#if !showingDraftThread && visibleSelectedThread}
-					<div class="reply-box composer-surface">
+					<div class="reply-box">
 						{#if liveConnectionWarning}
-							<p class="warning workspace-warning">{liveConnectionWarning}</p>
+							<p class="warning live-warning">{liveConnectionWarning}</p>
 						{/if}
 						{#if visibleErrorMessage}
-							<p class="error workspace-error">{visibleErrorMessage}</p>
+							<p class="error">{visibleErrorMessage}</p>
 						{/if}
-						<label class="field">
-							<span>Reply</span>
-							<textarea
-								bind:value={replyPrompt}
-								rows="4"
-								disabled={Boolean(interruptableTurnId) || interrupting}
-								onkeydown={(event) => submitOnEnter(event, () => void sendReply())}
-							></textarea>
-						</label>
+						<textarea
+							bind:value={replyPrompt}
+							rows="3"
+							placeholder="Type a message…"
+							disabled={Boolean(interruptableTurnId) || interrupting}
+							onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
+						></textarea>
 						<div class="reply-actions">
 							<button
-								type="button"
 								onclick={() => void sendReply()}
 								disabled={submitting || interrupting || Boolean(interruptableTurnId)}
 							>
-								Send
+								{submitting ? 'Sending…' : 'Send'}
 							</button>
 							{#if interruptableTurnId}
-								<button
-									type="button"
-									class="ghost"
-									onclick={() => void interruptCurrentTurn()}
-									disabled={interrupting}
-								>
+								<button class="danger" onclick={() => void interruptCurrentTurn()} disabled={interrupting}>
 									{interrupting ? 'Stopping…' : 'Stop'}
 								</button>
 							{/if}
 						</div>
 					</div>
 				{/if}
-			</section>
-		</main>
-
-		{#if !browserOpen}
-			<div class="screen-tools" role="group" aria-label="Page controls">
-				<button
-					type="button"
-					class="ghost floating-button"
-					aria-label="Scroll to top"
-					title="Scroll to top"
-					onclick={() => scrollMainTo('top')}
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path
-							d="M5 8.75 10 4l5 4.75M5 13.75 10 9l5 4.75"
-							fill="none"
-							stroke="currentColor"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="1.7"
-						/>
-					</svg>
-				</button>
-
-				{#if !showingDraftThread}
-					<button
-						type="button"
-						class="ghost floating-button"
-						aria-label="Previous turn"
-						title="Previous turn"
-						disabled={!hasHistoricalTurns || activeTurnIndex <= 0}
-						onclick={() => jumpTurn('previous')}
-					>
-						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path
-								d="M12.5 6 7.5 10l5 4"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-						</svg>
-					</button>
-
-					<button
-						type="button"
-						class="ghost floating-button"
-						aria-label="Next turn"
-						title="Next turn"
-						disabled={!hasHistoricalTurns || activeTurnIndex >= historicalTurns.length - 1}
-						onclick={() => jumpTurn('next')}
-					>
-						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path
-								d="M7.5 6 12.5 10l-5 4"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-						</svg>
-					</button>
-				{/if}
-
-				<button
-					type="button"
-					class="ghost floating-button"
-					aria-label="Scroll to bottom"
-					title="Scroll to bottom"
-					onclick={() => scrollMainTo('bottom')}
-				>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path
-							d="M5 6.25 10 11l5-4.75M5 11.25 10 16l5-4.75"
-							fill="none"
-							stroke="currentColor"
-							stroke-linecap="round"
-							stroke-linejoin="round"
-							stroke-width="1.7"
-						/>
-					</svg>
-				</button>
-
-				<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
-					<button type="submit" class="ghost floating-button" aria-label="Log out" title="Log out">
-						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path
-								d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-							<path
-								d="M11 6.25 15 10l-4 3.75M15 10H7.5"
-								fill="none"
-								stroke="currentColor"
-								stroke-linecap="round"
-								stroke-linejoin="round"
-								stroke-width="1.7"
-							/>
-						</svg>
-					</button>
-				</form>
 			</div>
-		{/if}
+		</main>
 	</div>
+
+	{#if sidebarCollapsed}
+		<button
+			type="button"
+			class="sidebar-reopen"
+			onclick={() => { sidebarCollapsed = false; }}
+			aria-label="Expand sidebar" title="Expand sidebar"
+		>
+			<svg viewBox="0 0 20 20" aria-hidden="true">
+				<path d="M4.5 4.5h11v11h-11zM8 4.5v11M11 7.25 13.75 10 11 12.75" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+	{/if}
+
+	{#if !browserOpen}
+		<div class="screen-tools" role="group" aria-label="Page controls">
+			<button type="button" class="floating-button" aria-label="Scroll to top" title="Scroll to top" onclick={() => scrollMainTo('top')}>
+				<svg viewBox="0 0 20 20" aria-hidden="true">
+					<path d="M5 8.75 10 4l5 4.75M5 13.75 10 9l5 4.75" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+			</button>
+			{#if !showingDraftThread}
+				<button type="button" class="floating-button" aria-label="Previous turn" title="Previous turn" disabled={!hasHistoricalTurns || activeTurnIndex <= 0} onclick={() => jumpTurn('previous')}>
+					<svg viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M12.5 6 7.5 10l5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+				<button type="button" class="floating-button" aria-label="Next turn" title="Next turn" disabled={!hasHistoricalTurns || activeTurnIndex >= historicalTurns.length - 1} onclick={() => jumpTurn('next')}>
+					<svg viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M7.5 6 12.5 10l-5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+			{/if}
+			<button type="button" class="floating-button" aria-label="Scroll to bottom" title="Scroll to bottom" onclick={() => scrollMainTo('bottom')}>
+				<svg viewBox="0 0 20 20" aria-hidden="true">
+					<path d="M5 6.25 10 11l5-4.75M5 11.25 10 16l5-4.75" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+				</svg>
+			</button>
+			<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form" style="margin:0;line-height:0">
+				<button class="floating-button" aria-label="Log out" title="Log out">
+					<svg viewBox="0 0 20 20" aria-hidden="true">
+						<path d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+						<path d="M11 6.25 15 10l-4 3.75M15 10H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+					</svg>
+				</button>
+			</form>
+		</div>
+	{/if}
 
 	<WorkspaceBrowser
 		open={browserOpen}
 		{listing}
 		selectedPath={workspacePath}
-		onClose={() => {
-			browserOpen = false;
-		}}
-		onNavigate={(nextPath) => void openBrowser(nextPath)}
-		onSelect={(nextPath) => {
-			workspacePath = nextPath;
-			browserOpen = false;
-		}}
+		onClose={() => { browserOpen = false; }}
+		onNavigate={(p) => void openBrowser(p)}
+		onSelect={(p) => { workspacePath = p; browserOpen = false; }}
 	/>
 {/if}
