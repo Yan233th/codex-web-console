@@ -126,6 +126,50 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const visibleWorkspacePath = $derived(
 		workspacePath || data.selectedThread?.thread.cwd || String(data.homePath)
 	);
+	type WorkspaceOption = {
+		key: string;
+		path: string;
+		name: string;
+		meta: string;
+		count: number;
+		updatedAt: number | null;
+	};
+	const workspaceOptions = $derived.by(() => {
+		const options = new Map<string, WorkspaceOption>();
+
+		function add(path: string, updatedAt: number | null, meta: string) {
+			const normalized = normalizeWorkspacePath(path);
+			const key = workspaceKey(normalized);
+			const existing = options.get(key);
+			if (existing) {
+				existing.count += 1;
+				existing.updatedAt = Math.max(existing.updatedAt ?? 0, updatedAt ?? 0) || existing.updatedAt;
+				return;
+			}
+
+			options.set(key, {
+				key,
+				path: normalized,
+				name: workspaceName(normalized),
+				meta,
+				count: 1,
+				updatedAt
+			});
+		}
+
+		for (const thread of allThreads) {
+			add(thread.cwd, thread.updatedAt, 'Recent workspace');
+		}
+
+		add(String(data.homePath), null, 'Home');
+
+		return [...options.values()].sort((a, b) => {
+			const selectedA = workspaceKey(workspacePath || visibleWorkspacePath) === a.key ? 1 : 0;
+			const selectedB = workspaceKey(workspacePath || visibleWorkspacePath) === b.key ? 1 : 0;
+			if (selectedA !== selectedB) return selectedB - selectedA;
+			return (b.updatedAt ?? 0) - (a.updatedAt ?? 0);
+		});
+	});
 	const visibleErrorMessage = $derived(errorMessage ?? bootErrorMessage);
 	const showingDraftThread = $derived(draftingThread || (!visibleSelectedThread && !loadingThread));
 	const selectedSummary = $derived(
@@ -235,6 +279,40 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function isThreadNotFound(error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return /thread not found/i.test(message);
+	}
+
+	function normalizeWorkspacePath(path: string): string {
+		return path.trim().replace(/[\\/]+$/, '') || String(data.homePath);
+	}
+
+	function isWindowsWorkspacePath(path: string): boolean {
+		return /^[a-z]:[\\/]/i.test(path);
+	}
+
+	function workspaceKey(path: string): string {
+		const normalized = normalizeWorkspacePath(path).replace(/\\/g, '/');
+		return isWindowsWorkspacePath(path) ? normalized.toLowerCase() : normalized;
+	}
+
+	function workspaceName(path: string): string {
+		const normalized = normalizeWorkspacePath(path);
+		const parts = normalized.split(/[\\/]/).filter(Boolean);
+		return parts.at(-1) ?? normalized;
+	}
+
+	function workspaceParent(path: string): string {
+		const normalized = normalizeWorkspacePath(path);
+		const parts = normalized.split(/[\\/]/).filter(Boolean);
+		if (parts.length <= 1) return normalized;
+		return parts.slice(0, -1).join(normalized.includes('\\') ? '\\' : '/');
+	}
+
+	function isSelectedWorkspace(path: string): boolean {
+		return workspaceKey(path) === workspaceKey(workspacePath || visibleWorkspacePath);
+	}
+
+	function selectWorkspace(path: string) {
+		workspacePath = path;
 	}
 
 	function clearSelectedThreadState(message?: string) {
@@ -546,9 +624,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	async function openBrowser(path: string) {
-		const payload = await readJson<{ listing: DirectoryListing }>(await fetch(`/api/fs?path=${encodeURIComponent(path)}`));
-		listing = payload.listing;
-		browserOpen = true;
+		try {
+			const payload = await readJson<{ listing: DirectoryListing }>(await fetch(`/api/fs?path=${encodeURIComponent(path || visibleWorkspacePath)}`));
+			listing = payload.listing;
+			browserOpen = true;
+			errorMessage = null;
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+		}
 	}
 
 	async function createThread() {
@@ -1019,11 +1102,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							<p class="detail-cwd">{selectedSummary.cwd}</p>
 						{/if}
 					</div>
-					{#if showingDraftThread}
-						<button class="ghost" onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}>
-							Browse
-						</button>
-					{/if}
 				</div>
 
 				<!-- Body -->
@@ -1036,10 +1114,46 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							{#if visibleErrorMessage}
 								<p class="error">{visibleErrorMessage}</p>
 							{/if}
-							<div>
-								<span class="compose-field-label">Workspace</span>
-								<input bind:value={workspacePath} spellcheck="false" />
-							</div>
+							<section class="workspace-picker" aria-label="Workspace">
+								<div class="workspace-picker-header">
+									<div>
+										<span class="compose-field-label">Workspace</span>
+										<p>{workspacePath || visibleWorkspacePath}</p>
+									</div>
+									<button class="ghost workspace-browse" type="button" onclick={() => void openBrowser(workspacePath || visibleWorkspacePath)}>
+										Browse
+									</button>
+								</div>
+
+								{#if workspaceOptions.length > 0}
+									<div class="workspace-option-list">
+										{#each workspaceOptions.slice(0, 6) as option (option.key)}
+											<button
+												type="button"
+												class="workspace-option"
+												class:selected={isSelectedWorkspace(option.path)}
+												onclick={() => selectWorkspace(option.path)}
+											>
+												<span class="workspace-option-icon" aria-hidden="true">
+													<svg viewBox="0 0 20 20">
+														<path d="M3.5 6.25A2.25 2.25 0 0 1 5.75 4h2.1c.55 0 .9.2 1.25.62l.8.96c.22.27.42.37.78.37h3.57a2.25 2.25 0 0 1 2.25 2.25v5.05a2.25 2.25 0 0 1-2.25 2.25h-8.5a2.25 2.25 0 0 1-2.25-2.25v-7Z" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+													</svg>
+												</span>
+												<span class="workspace-option-copy">
+													<strong>{option.name}</strong>
+													<small>{option.meta}{option.count > 1 ? ` · ${option.count} threads` : ''}</small>
+												</span>
+												<span class="workspace-option-path" title={option.path}>{workspaceParent(option.path)}</span>
+											</button>
+										{/each}
+									</div>
+								{/if}
+
+								<label class="workspace-custom">
+									<span>Custom path</span>
+									<input bind:value={workspacePath} spellcheck="false" placeholder={String(data.homePath)} />
+								</label>
+							</section>
 							<div class="prompt-composer">
 								<textarea
 									class="prompt-input"
