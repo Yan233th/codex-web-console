@@ -1,6 +1,6 @@
 <script lang="ts">
 import { enhance } from '$app/forms';
-import { goto, pushState } from '$app/navigation';
+import { goto } from '$app/navigation';
 import { tick } from 'svelte';
 import type { SubmitFunction } from '@sveltejs/kit';
 
@@ -845,7 +845,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const href = threadHref(threadId);
 		if (typeof window === 'undefined') return;
 		if (`${window.location.pathname}${window.location.search}` === href) return;
-		pushState(href, {});
+		window.history.pushState({}, '', href);
 	}
 
 	function pendingTurnId() {
@@ -1344,8 +1344,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		while (!signal.aborted) {
 			try {
 				const params = new URLSearchParams({
-					transport: 'poll',
-					wait: '25000'
+					transport: 'poll'
 				});
 				if (lastEventId > 0) params.set('since', String(lastEventId));
 				const payload = await readJson<{ events: SequencedConsoleEvent[]; latestId: number }>(
@@ -1355,6 +1354,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				applySequencedEvents(payload.events);
 				lastEventId = Math.max(lastEventId, payload.latestId);
 				liveConnectionState = 'live';
+				if (payload.events.length === 0) {
+					await abortableDelay(1500, signal);
+				}
 			} catch {
 				if (signal.aborted) return;
 				liveConnectionState = 'reconnecting';

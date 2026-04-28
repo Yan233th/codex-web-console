@@ -17,10 +17,10 @@ function readEventId(value: string | null): number {
 }
 
 function readWaitMs(value: string | null): number {
-	if (!value) return 25_000;
+	if (!value) return 0;
 	const parsed = Number(value);
-	if (!Number.isFinite(parsed) || parsed <= 0) return 25_000;
-	return Math.min(30_000, Math.floor(parsed));
+	if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+	return Math.min(5_000, Math.floor(parsed));
 }
 
 function encodeEvent(id: number, event: unknown): Uint8Array {
@@ -34,7 +34,11 @@ export const GET = async ({ locals, request, url }) => {
 	const since = requestedSince === null ? codex.getLatestEventId() : readEventId(requestedSince);
 
 	if (url.searchParams.get('transport') === 'poll') {
-		const events = await codex.waitForEvents(since, readWaitMs(url.searchParams.get('wait')), request.signal);
+		const waitMs = readWaitMs(url.searchParams.get('wait'));
+		const events =
+			waitMs > 0
+				? await codex.waitForEvents(since, waitMs, request.signal)
+				: codex.getEventsSince(since);
 		return json(
 			{ events, latestId: codex.getLatestEventId() },
 			{ headers: { 'Cache-Control': 'no-store, no-transform' } }
