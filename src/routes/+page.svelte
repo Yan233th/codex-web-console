@@ -132,23 +132,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	};
 
 	// ── Theme ──
-	let currentTheme = $state<'auto' | 'dark' | 'light'>('auto');
+	let currentTheme = $state<'dark' | 'light'>('dark');
 
 	$effect(() => {
-		const saved = typeof localStorage !== 'undefined' ? (localStorage.getItem('theme') as 'auto' | 'dark' | 'light') : null;
-		if (saved) currentTheme = saved;
+		const saved = typeof localStorage !== 'undefined' ? (localStorage.getItem('theme') as 'dark' | 'light') : null;
+		if (saved === 'dark' || saved === 'light') currentTheme = saved;
 	});
 
 	function cycleTheme() {
 		const root = document.documentElement;
-		let next: typeof currentTheme;
-		if (currentTheme === 'auto') next = 'dark';
-		else if (currentTheme === 'dark') next = 'light';
-		else next = 'auto';
+		const next: typeof currentTheme = currentTheme === 'dark' ? 'light' : 'dark';
 		localStorage.setItem('theme', next);
 		root.classList.remove('light', 'dark');
-		if (next === 'dark') root.classList.add('dark');
-		else if (next === 'light') root.classList.add('light');
+		root.classList.add(next);
 		currentTheme = next;
 	}
 	function threadHref(threadId: string | null): string {
@@ -330,7 +326,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (target === window) {
 			window.scrollTo({ top: position === 'top' ? 0 : document.documentElement.scrollHeight, behavior });
 		} else {
-			target.scrollTo({ top: position === 'top' ? 0 : target.scrollHeight, behavior });
+			const element = target as HTMLElement;
+			element.scrollTo({ top: position === 'top' ? 0 : element.scrollHeight, behavior });
 		}
 	}
 
@@ -368,7 +365,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (target === window) {
 			window.scrollTo({ top: window.scrollY + el.getBoundingClientRect().top - offset, behavior: 'smooth' });
 		} else {
-			target.scrollTo({ top: target.scrollTop + el.getBoundingClientRect().top - target.getBoundingClientRect().top - offset, behavior: 'smooth' });
+			const element = target as HTMLElement;
+			element.scrollTo({ top: element.scrollTop + el.getBoundingClientRect().top - element.getBoundingClientRect().top - offset, behavior: 'smooth' });
 		}
 		activeTurnIndex = index;
 	}
@@ -379,8 +377,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			const top = window.scrollY;
 			return { mode: 'window', top, stickToBottom: Math.max(0, document.documentElement.scrollHeight - window.innerHeight) - top < 80 };
 		}
-		const top = target.scrollTop;
-		return { mode: 'element', top, stickToBottom: Math.max(0, target.scrollHeight - target.clientHeight) - top < 80 };
+		const element = target as HTMLElement;
+		const top = element.scrollTop;
+		return { mode: 'element', top, stickToBottom: Math.max(0, element.scrollHeight - element.clientHeight) - top < 80 };
 	}
 
 	function restoreScrollSnapshot(snapshot: ScrollSnapshot | null) {
@@ -392,7 +391,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 		const target = scrollTarget();
 		if (target !== window) {
-			target.scrollTo({ top: snapshot.stickToBottom ? target.scrollHeight : snapshot.top, behavior: 'auto' });
+			const element = target as HTMLElement;
+			element.scrollTo({ top: snapshot.stickToBottom ? element.scrollHeight : snapshot.top, behavior: 'auto' });
 		}
 	}
 
@@ -401,7 +401,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (target === window) {
 			return Math.max(0, document.documentElement.scrollHeight - window.innerHeight) - window.scrollY < 96;
 		}
-		return Math.max(0, target.scrollHeight - target.clientHeight) - target.scrollTop < 96;
+		const element = target as HTMLElement;
+		return Math.max(0, element.scrollHeight - element.clientHeight) - element.scrollTop < 96;
 	}
 
 	function jumpTurn(dir: 'previous' | 'next') {
@@ -514,12 +515,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				<div class="sidebar-actions">
 					<button onclick={cycleTheme} title="Toggle theme" aria-label="Toggle theme">
 						<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linecap="round" stroke-linejoin="round">
-							{#if currentTheme === 'auto'}
-								<!-- half moon + half sun -->
-								<path d="M17 12.7A7 7 0 1 1 7.3 3a7 7 0 0 0 4.7 14 7 7 0 0 0 5-4.3z" />
-								<circle cx="13" cy="9.5" r="1.5" />
-								<path d="M13 6v1M13 12v1M9.5 9.5h1M15.5 9.5h1" />
-							{:else if currentTheme === 'dark'}
+							{#if currentTheme === 'dark'}
 								<path d="M17 12.7A7 7 0 1 1 7.3 3a7 7 0 0 0 9.7 9.7z" />
 							{:else}
 								<circle cx="10" cy="10" r="4" />
@@ -532,7 +528,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						aria-label="Collapse sidebar" title="Collapse sidebar"
 					>
 						<svg viewBox="0 0 20 20" aria-hidden="true">
-							<path d="M4.5 4.5h11v11h-11zM12 4.5v11M9 7.25 6.25 10 9 12.75" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+							<path d="M7 4v12M13 7l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
 					</button>
 				</div>
@@ -685,7 +681,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			aria-label="Expand sidebar" title="Expand sidebar"
 		>
 			<svg viewBox="0 0 20 20" aria-hidden="true">
-				<path d="M4.5 4.5h11v11h-11zM8 4.5v11M11 7.25 13.75 10 11 12.75" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round" />
+				<path d="M7 4v12M10 7l3 3-3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
 			</svg>
 		</button>
 	{/if}

@@ -6,12 +6,10 @@
 
 	// Restore saved theme from localStorage on load
 	$effect(() => {
-		const saved = localStorage.getItem('theme') as string | null;
+		const saved = localStorage.getItem('theme') as 'dark' | 'light' | null;
 		const root = document.documentElement;
 		root.classList.remove('light', 'dark');
-		if (saved === 'dark') root.classList.add('dark');
-		else if (saved === 'light') root.classList.add('light');
-		// 'auto' or unset: no class, uses prefers-color-scheme
+		root.classList.add(saved === 'light' ? 'light' : 'dark');
 	});
 </script>
 

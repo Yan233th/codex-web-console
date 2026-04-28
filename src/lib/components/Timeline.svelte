@@ -23,7 +23,238 @@
 	function loadMore() {
 		visibleCount = Math.min(turns.length, visibleCount + BATCH);
 	}
+
+	function isFoldableWork(entry: TimelineEntry) {
+		if (entry.kind === 'assistant' && entry.phase === 'commentary') return true;
+		return (
+			entry.kind === 'reasoning' ||
+			entry.kind === 'command' ||
+			entry.kind === 'file_change' ||
+			entry.kind === 'web_search' ||
+			entry.kind === 'plan'
+		);
+	}
+
+	function isInlineFoldableWork(entry: TimelineEntry) {
+		return (
+			entry.kind === 'reasoning' ||
+			entry.kind === 'command' ||
+			entry.kind === 'file_change' ||
+			entry.kind === 'web_search' ||
+			entry.kind === 'plan'
+		);
+	}
+
+	function isFinalAnswer(entry: TimelineEntry) {
+		return entry.kind === 'assistant' && entry.phase === 'final_answer';
+	}
+
+	function isActiveCommand(entry: TimelineEntry) {
+		if (entry.kind !== 'command') return false;
+		const status = entry.status?.toLowerCase() ?? '';
+		if (status.includes('running') || status.includes('started') || status.includes('active')) return true;
+		return entry.exitCode === null && Boolean(entry.command || entry.output);
+	}
+
+	function formatDuration(durationMs: number | null | undefined) {
+		if (durationMs === null || durationMs === undefined || !Number.isFinite(durationMs)) return '';
+
+		const totalSeconds = Math.max(1, Math.round(durationMs / 1000));
+		const hours = Math.floor(totalSeconds / 3600);
+		const minutes = Math.floor((totalSeconds % 3600) / 60);
+		const seconds = totalSeconds % 60;
+
+		if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
+		if (minutes > 0) return `${minutes}m ${seconds}s`;
+		return `${seconds}s`;
+	}
+
+	function summarizeWork(entries: TimelineEntry[]) {
+		const commandCount = entries.filter((entry) => entry.kind === 'command').length;
+		const fileChangeCount = entries.filter((entry) => entry.kind === 'file_change').length;
+		const webSearchCount = entries.filter((entry) => entry.kind === 'web_search').length;
+		const parts: string[] = [];
+
+		if (commandCount > 0) parts.push(`Ran ${commandCount} command${commandCount > 1 ? 's' : ''}`);
+		if (fileChangeCount > 0) parts.push(`已编辑 ${fileChangeCount} 个文件`);
+		if (webSearchCount > 0) parts.push(`搜索 ${webSearchCount} 次`);
+
+		return parts.join(' · ');
+	}
+
+	function summarizeInlineWork(entries: TimelineEntry[]) {
+		const activeCommand = entries.find(isActiveCommand);
+		if (activeCommand) return '正在运行命令';
+
+		const summary = summarizeWork(entries);
+		if (summary) return summary;
+
+		if (entries.some((entry) => entry.kind === 'reasoning')) return '思考过程';
+		if (entries.some((entry) => entry.kind === 'plan')) return '更新计划';
+		return '处理细节';
+	}
+
+	function inlineDuration(entries: TimelineEntry[]) {
+		return formatDuration(entries.find(isActiveCommand)?.durationMs);
+	}
+
+	function buildInlineBatches(entries: TimelineEntry[]) {
+		const batches: Array<{ index: number; entries: TimelineEntry[]; summary: string; duration: string }> = [];
+		let current: { index: number; entries: TimelineEntry[] } | null = null;
+
+		for (const [index, entry] of entries.entries()) {
+			if (isInlineFoldableWork(entry)) {
+				current ??= { index, entries: [] };
+				current.entries.push(entry);
+				continue;
+			}
+
+			if (current) {
+				batches.push({
+					...current,
+					summary: summarizeInlineWork(current.entries),
+					duration: inlineDuration(current.entries)
+				});
+				current = null;
+			}
+		}
+
+		if (current) {
+			batches.push({
+				...current,
+				summary: summarizeInlineWork(current.entries),
+				duration: inlineDuration(current.entries)
+			});
+		}
+
+		return batches;
+	}
+
+	function batchAt(
+		batches: Array<{ index: number; entries: TimelineEntry[]; summary: string; duration: string }>,
+		index: number
+	) {
+		return batches.find((batch) => batch.index === index) ?? null;
+	}
+
+	// Codex-style folding: keep user/final messages visible, fold reasoning and tools into a turn-level row.
+	function analyseTurn(entries: TimelineEntry[]) {
+		const hasFinalAnswer = entries.some(isFinalAnswer);
+
+		if (!hasFinalAnswer) {
+			const batches = buildInlineBatches(entries);
+
+			return {
+				mode: 'inline' as const,
+				collapsed: batches.length > 0,
+				firstWorkIndex: -1,
+				workEntries: [] as TimelineEntry[],
+				workSummary: '',
+				batches
+			};
+		}
+
+		const workEntries = entries.filter(isFoldableWork);
+		const firstWorkIndex = entries.findIndex(isFoldableWork);
+
+		return {
+			mode: 'turn' as const,
+			collapsed: workEntries.length > 0,
+			firstWorkIndex,
+			workEntries,
+			workSummary: summarizeWork(workEntries),
+			batches: [] as Array<{ index: number; entries: TimelineEntry[]; summary: string; duration: string }>
+		};
+	}
 </script>
+
+{#snippet renderEntry(entry: TimelineEntry)}
+	{@const kind = entry.kind}
+	<article class="entry" class:entry-user={kind === 'user'}>
+		<span class="entry-label">{entry.label}</span>
+
+		{#if kind === 'command'}
+			<details class="command-block" open={isActiveCommand(entry)}>
+				<summary>
+					<span>{entry.command || 'Command'}</span>
+					{#if entry.exitCode !== null && entry.exitCode !== undefined}
+						<small>exit {entry.exitCode}</small>
+					{/if}
+				</summary>
+				{#if entry.cwd}
+					<pre class="command-code">{entry.cwd}{entry.command ? `\n$ ${entry.command}` : ''}</pre>
+				{:else if entry.command}
+					<pre class="command-code">$ {entry.command}</pre>
+				{/if}
+				{#if entry.output}
+					<pre class="command-code command-output">{entry.output}</pre>
+				{/if}
+			</details>
+		{:else if kind === 'reasoning'}
+			<details class="command-block" open>
+				<summary><span>{entry.label}</span></summary>
+				{#if entry.text}
+					<div class="markdown">{@html renderMarkdown(entry.text)}</div>
+				{/if}
+			</details>
+		{:else if kind === 'web_search'}
+			<details class="command-block">
+				<summary><span>{entry.query || 'Web search'}</span></summary>
+				<div class="entry-text">
+					{#if entry.actionType}
+						<p style="font-size:12px;color:var(--ink-soft)">Action: {entry.actionType}</p>
+					{/if}
+					{#if entry.url}
+						<p style="font-size:12px;color:var(--ink-soft)">{entry.url}</p>
+					{/if}
+					{#if entry.queries && entry.queries.length > 0}
+						<ul style="font-size:12px;color:var(--ink-soft)">
+							{#each entry.queries as q}
+								<li>{q}</li>
+							{/each}
+						</ul>
+					{/if}
+				</div>
+			</details>
+		{:else}
+			{#if entry.text}
+				<div class="markdown">{@html renderMarkdown(entry.text)}</div>
+			{/if}
+		{/if}
+
+		{#if entry.changes}
+			<ul style="font-size:12px;color:var(--ink-soft);margin:0;padding-left:16px">
+				{#each entry.changes as change}
+					<li>{change.kind} {change.path}</li>
+				{/each}
+			</ul>
+		{/if}
+	</article>
+{/snippet}
+
+{#snippet renderWorkCollapse(workEntries: TimelineEntry[], statusLabel: string, durationLabel = '', workSummary = '')}
+	<details class="work-collapse" open={workEntries.some(isActiveCommand)}>
+		<summary class="work-summary">
+			<span class="work-summary-main">
+				<span>{statusLabel}</span>
+				{#if durationLabel}
+					<span>{durationLabel}</span>
+				{/if}
+				<span class="work-chevron" aria-hidden="true">›</span>
+			</span>
+			<span class="work-summary-rule"></span>
+		</summary>
+
+		<div class="work-detail">
+			{#if workSummary}
+				<p class="work-summary-text">{workSummary}</p>
+			{/if}
+			{#each workEntries as entry (entry.id)}
+				{@render renderEntry(entry)}
+			{/each}
+		</div>
+	</details>
+{/snippet}
 
 <section class="timeline">
 	{#if hidden > 0}
@@ -39,6 +270,7 @@
 	{/if}
 
 	{#each visibleTurns as turn (turn.id)}
+		{@const analysis = analyseTurn(turn.entries)}
 		<section class="turn" id={`turn-${turn.id}`} data-turn-id={turn.id}>
 			<div class="turn-meta">
 				<span class="dot"></span>
@@ -46,69 +278,37 @@
 				<span>{turn.status}</span>
 			</div>
 
-			{#each turn.entries as entry (entry.id)}
-				{@const kind = entry.kind}
-				<article class="entry">
-					<span class="entry-label">{entry.label}</span>
-
-					{#if kind === 'command'}
-						<details class="command-block">
-							<summary>
-								<span>{entry.command || 'Command'}</span>
-								{#if entry.exitCode !== null && entry.exitCode !== undefined}
-									<small>exit {entry.exitCode}</small>
-								{/if}
-							</summary>
-							{#if entry.cwd}
-								<pre class="command-code">{entry.cwd}{entry.command ? `\n$ ${entry.command}` : ''}</pre>
-							{:else if entry.command}
-								<pre class="command-code">$ {entry.command}</pre>
-							{/if}
-							{#if entry.output}
-								<pre class="command-code command-output">{entry.output}</pre>
-							{/if}
-						</details>
-					{:else if kind === 'reasoning'}
-						<details class="command-block" open>
-							<summary><span>{entry.label}</span></summary>
-							{#if entry.text}
-								<div class="markdown">{@html renderMarkdown(entry.text)}</div>
-							{/if}
-						</details>
-					{:else if kind === 'web_search'}
-						<details class="command-block">
-							<summary><span>{entry.query || 'Web search'}</span></summary>
-							<div class="entry-text">
-								{#if entry.actionType}
-									<p style="font-size:12px;color:var(--ink-soft)">Action: {entry.actionType}</p>
-								{/if}
-								{#if entry.url}
-									<p style="font-size:12px;color:var(--ink-soft)">{entry.url}</p>
-								{/if}
-								{#if entry.queries && entry.queries.length > 0}
-									<ul style="font-size:12px;color:var(--ink-soft)">
-										{#each entry.queries as q}
-											<li>{q}</li>
-										{/each}
-									</ul>
-								{/if}
-							</div>
-						</details>
-					{:else}
-						{#if entry.text}
-							<div class="markdown">{@html renderMarkdown(entry.text)}</div>
-						{/if}
+			{#if analysis.mode === 'turn' && analysis.collapsed}
+				{#each turn.entries as entry, index (entry.id)}
+					{#if index === analysis.firstWorkIndex}
+						{@render renderWorkCollapse(
+							analysis.workEntries,
+							turn.completedAt === null ? '处理中' : '已处理',
+							formatDuration(turn.durationMs),
+							analysis.workSummary
+						)}
 					{/if}
 
-					{#if entry.changes}
-						<ul style="font-size:12px;color:var(--ink-soft);margin:0;padding-left:16px">
-							{#each entry.changes as change}
-								<li>{change.kind} {change.path}</li>
-							{/each}
-						</ul>
+					{#if !isFoldableWork(entry)}
+						{@render renderEntry(entry)}
 					{/if}
-				</article>
-			{/each}
+				{/each}
+			{:else if analysis.mode === 'inline' && analysis.collapsed}
+				{#each turn.entries as entry, index (entry.id)}
+					{@const batch = batchAt(analysis.batches, index)}
+					{#if batch}
+						{@render renderWorkCollapse(batch.entries, batch.summary, batch.duration, '')}
+					{/if}
+
+					{#if !isInlineFoldableWork(entry)}
+						{@render renderEntry(entry)}
+					{/if}
+				{/each}
+			{:else}
+				{#each turn.entries as entry (entry.id)}
+					{@render renderEntry(entry)}
+				{/each}
+			{/if}
 		</section>
 	{/each}
 
@@ -121,49 +321,7 @@
 			</div>
 
 			{#each liveEntries as entry (entry.id)}
-				{@const kind = entry.kind}
-				<article class="entry">
-					<span class="entry-label">{entry.label}</span>
-
-					{#if kind === 'command'}
-						<details class="command-block" open>
-							<summary><span>{entry.command || 'Command'}</span></summary>
-							{#if entry.cwd}
-								<pre class="command-code">{entry.cwd}{entry.command ? `\n$ ${entry.command}` : ''}</pre>
-							{:else if entry.command}
-								<pre class="command-code">$ {entry.command}</pre>
-							{/if}
-							{#if entry.output}
-								<pre class="command-code command-output">{entry.output}</pre>
-							{/if}
-						</details>
-					{:else if kind === 'reasoning'}
-						<details class="command-block" open>
-							<summary><span>{entry.label}</span></summary>
-							{#if entry.text}
-								<div class="markdown">{@html renderMarkdown(entry.text)}</div>
-							{/if}
-						</details>
-					{:else if kind === 'web_search'}
-						<details class="command-block" open>
-							<summary><span>{entry.query || 'Web search'}</span></summary>
-							<div class="entry-text">
-								{#if entry.url}
-									<p style="font-size:12px;color:var(--ink-soft)">{entry.url}</p>
-								{/if}
-								{#if entry.queries && entry.queries.length > 0}
-									<ul style="font-size:12px;color:var(--ink-soft)">
-										{#each entry.queries as q}
-											<li>{q}</li>
-										{/each}
-									</ul>
-								{/if}
-							</div>
-						</details>
-					{:else if entry.text}
-						<div class="markdown">{@html renderMarkdown(entry.text)}</div>
-					{/if}
-				</article>
+				{@render renderEntry(entry)}
 			{/each}
 		</section>
 	{/if}
