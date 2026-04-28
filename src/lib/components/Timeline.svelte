@@ -19,6 +19,8 @@
 	const visibleTurns = $derived(turns.slice(Math.max(0, turns.length - visibleCount)));
 	const remaining = $derived(Math.max(0, turns.length - visibleCount));
 	const hidden = $derived(Math.max(0, remaining));
+	const liveIsRunning = $derived(liveEntries.some(isActiveCommand));
+	let now = $state(Date.now());
 
 	function loadMore() {
 		visibleCount = Math.min(turns.length, visibleCount + BATCH);
@@ -51,10 +53,44 @@
 
 	function isActiveCommand(entry: TimelineEntry) {
 		if (entry.kind !== 'command') return false;
+		if (entry.completedAt) return false;
 		const status = entry.status?.toLowerCase() ?? '';
-		if (status.includes('running') || status.includes('started') || status.includes('active')) return true;
+		if (
+			status.includes('completed') ||
+			status.includes('finished') ||
+			status.includes('failed') ||
+			status.includes('cancel') ||
+			status.includes('interrupt') ||
+			status.includes('error')
+		) return false;
+		if (
+			status.includes('running') ||
+			status.includes('started') ||
+			status.includes('active') ||
+			status.includes('pending') ||
+			status.includes('progress') ||
+			status.includes('executing')
+		) return true;
 		return entry.exitCode === null && Boolean(entry.command || entry.output);
 	}
+
+	const hasActiveTimers = $derived.by(() => {
+		if (approvals.length > 0) return true;
+		if (liveEntries.some(isActiveCommand)) return true;
+		return visibleTurns.some((turn) => (
+			turn.completedAt === null ||
+			turn.entries.some(isActiveCommand)
+		));
+	});
+
+	$effect(() => {
+		if (!hasActiveTimers) return;
+		now = Date.now();
+		const timer = window.setInterval(() => {
+			now = Date.now();
+		}, 1000);
+		return () => window.clearInterval(timer);
+	});
 
 	function formatDuration(durationMs: number | null | undefined) {
 		if (durationMs === null || durationMs === undefined || !Number.isFinite(durationMs)) return '';
@@ -67,6 +103,31 @@
 		if (hours > 0) return `${hours}h ${minutes}m ${seconds}s`;
 		if (minutes > 0) return `${minutes}m ${seconds}s`;
 		return `${seconds}s`;
+	}
+
+	function elapsedMs(entry: TimelineEntry) {
+		if (entry.durationMs !== null && entry.durationMs !== undefined) return entry.durationMs;
+		if (!entry.startedAt) return null;
+		const end = entry.completedAt ?? (isActiveCommand(entry) ? now : null);
+		return end ? Math.max(0, end - entry.startedAt) : null;
+	}
+
+	function commandStatusLabel(entry: TimelineEntry) {
+		const parts: string[] = [];
+		const duration = formatDuration(elapsedMs(entry));
+
+		if (isActiveCommand(entry)) {
+			parts.push('running');
+		} else if (entry.status) {
+			parts.push(entry.status);
+		}
+
+		if (entry.exitCode !== null && entry.exitCode !== undefined) {
+			parts.push(`exit ${entry.exitCode}`);
+		}
+
+		if (duration) parts.push(duration);
+		return parts.join(' · ');
 	}
 
 	function summarizeWork(entries: TimelineEntry[]) {
@@ -95,7 +156,8 @@
 	}
 
 	function inlineDuration(entries: TimelineEntry[]) {
-		return formatDuration(entries.find(isActiveCommand)?.durationMs);
+		const timedEntry = entries.find(isActiveCommand) ?? entries.find((entry) => Boolean(entry.startedAt));
+		return timedEntry ? formatDuration(elapsedMs(timedEntry)) : '';
 	}
 
 	function buildInlineBatches(entries: TimelineEntry[]) {
@@ -177,8 +239,8 @@
 			<details class="command-block" open={isActiveCommand(entry)}>
 				<summary>
 					<span>{entry.command || 'Command'}</span>
-					{#if entry.exitCode !== null && entry.exitCode !== undefined}
-						<small>exit {entry.exitCode}</small>
+					{#if commandStatusLabel(entry)}
+						<small class="command-meta">{commandStatusLabel(entry)}</small>
 					{/if}
 				</summary>
 				{#if entry.cwd}
@@ -315,9 +377,9 @@
 	{#if liveEntries.length > 0}
 		<section class="turn">
 			<div class="turn-meta">
-				<span class="dot" style="background:var(--success)"></span>
-				<span class="running">Live</span>
-				<span>running</span>
+				<span class="dot" style:background={liveIsRunning ? 'var(--success)' : 'var(--ink-faint)'}></span>
+				<span class:running={liveIsRunning}>Live</span>
+				<span>{liveIsRunning ? 'running' : 'settled'}</span>
 			</div>
 
 			{#each liveEntries as entry (entry.id)}
@@ -351,7 +413,10 @@
 		<section class="approval-stack">
 			{#each approvals as approval (approval.requestId)}
 				<article class="approval-card">
-					<h3>{approval.title}</h3>
+					<h3>
+						<span>{approval.title}</span>
+						<span class="approval-wait">等待允许 {formatDuration(now - approval.requestedAt)}</span>
+					</h3>
 					{#if approval.reason}
 						<p>{approval.reason}</p>
 					{/if}

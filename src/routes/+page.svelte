@@ -12,6 +12,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		ApprovalRequest,
 		ConsoleEvent,
 		DirectoryListing,
+		PermissionMode,
 		ThreadDetail,
 		ThreadSummary,
 		TimelineEntry
@@ -42,6 +43,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let selectedThreadId = $state<string | null>(null);
 	let selectedThread = $state<ThreadDetail | null>(null);
 	let liveEntries = $state<Record<string, TimelineEntry>>({});
+	let liveEntryBuffers = $state<Record<string, Record<string, TimelineEntry>>>({});
 	let runtimeReasoning = $state<Record<string, TimelineEntry[]>>({});
 	let approvals = $state<ApprovalRequest[]>([]);
 	let browserOpen = $state(false);
@@ -65,8 +67,35 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let scrollRestoreLockUntil = $state(0);
 	let followLiveOutput = $state(true);
 	let liveConnectionState = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
+	let permissionMode = $state<PermissionMode>('default');
+	let permissionMenuOpen = $state(false);
+
+	const permissionOptions: Array<{
+		mode: PermissionMode;
+		label: string;
+		description: string;
+	}> = [
+		{
+			mode: 'default',
+			label: '默认权限',
+			description: '需要时请求许可'
+		},
+		{
+			mode: 'auto',
+			label: '自动审查',
+			description: '由 Codex 自动审查许可'
+		},
+		{
+			mode: 'full',
+			label: '完全访问权限',
+			description: '无沙箱，自动允许'
+		}
+	];
 	// ── Derived ──
 	const liveEntryList = $derived(Object.values(liveEntries));
+	const selectedPermission = $derived(
+		permissionOptions.find((option) => option.mode === permissionMode) ?? permissionOptions[0]
+	);
 	const allThreads = $derived(threads.length > 0 ? threads : data.threads);
 	const providerOptions = $derived.by(() => {
 		const options = new Set<string>();
@@ -104,15 +133,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	);
 	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
 	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
-	const fallbackRunningTurnId = $derived.by(() => {
-		const turns = visibleSelectedThread?.turns ?? [];
-		for (let i = turns.length - 1; i >= 0; i--) {
-			if (turns[i].completedAt === null) return turns[i].id;
-		}
-		return null;
-	});
 	let runningTurnId = $state<string | null>(null);
-	const interruptableTurnId = $derived(runningTurnId ?? fallbackRunningTurnId);
+	const historicalRunningTurnId = $derived.by(() => findActiveTurnId(visibleSelectedThread));
+	const liveRunningTurnId = $derived.by(() => {
+		if (!runningTurnId) return null;
+		const detail = visibleSelectedThread;
+		if (!detail) return runningTurnId;
+
+		const matchingTurn = detail.turns.find((turn) => turn.id === runningTurnId);
+		if (matchingTurn) return isActiveTurn(matchingTurn) ? runningTurnId : null;
+
+		return isActiveThreadStatus(detail.thread.status) ? runningTurnId : null;
+	});
+	const interruptableTurnId = $derived(historicalRunningTurnId ?? liveRunningTurnId);
 
 	const liveConnectionWarning = $derived.by(() => {
 		if (!authenticated) return null;
@@ -147,15 +180,163 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		root.classList.add(next);
 		currentTheme = next;
 	}
+
+	$effect(() => {
+		const saved =
+			typeof localStorage !== 'undefined'
+				? (localStorage.getItem('permissionMode') as PermissionMode | null)
+				: null;
+		if (saved === 'default' || saved === 'auto' || saved === 'full') {
+			permissionMode = saved;
+		}
+	});
+
+	function selectPermissionMode(mode: PermissionMode) {
+		permissionMode = mode;
+		permissionMenuOpen = false;
+		if (typeof localStorage !== 'undefined') {
+			localStorage.setItem('permissionMode', mode);
+		}
+	}
+
 	function threadHref(threadId: string | null): string {
 		if (!threadId) return '/';
 		return `/?${new URLSearchParams({ thread: threadId }).toString()}`;
 	}
 
+	function isThreadNotFound(error: unknown) {
+		const message = error instanceof Error ? error.message : String(error);
+		return /thread not found/i.test(message);
+	}
+
+	function clearSelectedThreadState(message?: string) {
+		selectedThreadId = null;
+		selectedThread = null;
+		runningTurnId = null;
+		liveEntries = {};
+		approvals = [];
+		draftingThread = true;
+		replyPrompt = '';
+		if (message) errorMessage = message;
+	}
+
+	function removeLiveBuffer(threadId: string) {
+		const { [threadId]: _removed, ...rest } = liveEntryBuffers;
+		liveEntryBuffers = rest;
+	}
+
+	function flushLiveBuffer(threadId: string) {
+		const buffered = liveEntryBuffers[threadId];
+		if (!buffered) return;
+		liveEntries = { ...buffered, ...liveEntries };
+		removeLiveBuffer(threadId);
+	}
+
+	function stashCurrentLiveEntries() {
+		if (!selectedThreadId || Object.keys(liveEntries).length === 0) return;
+		liveEntryBuffers = {
+			...liveEntryBuffers,
+			[selectedThreadId]: {
+				...(liveEntryBuffers[selectedThreadId] ?? {}),
+				...liveEntries
+			}
+		};
+		liveEntries = {};
+	}
+
+	function getLiveEntry(threadId: string, itemId: string) {
+		return threadId === selectedThreadId ? liveEntries[itemId] : liveEntryBuffers[threadId]?.[itemId];
+	}
+
+	function isTerminalStatus(status: string | null | undefined) {
+		const value = status?.toLowerCase() ?? '';
+		return (
+			value.includes('completed') ||
+			value.includes('finished') ||
+			value.includes('failed') ||
+			value.includes('cancel') ||
+			value.includes('interrupt') ||
+			value.includes('error')
+		);
+	}
+
+	function isActiveThreadStatus(status: string | null | undefined) {
+		const value = status?.toLowerCase() ?? '';
+		return (
+			value.includes('active') ||
+			value.includes('running') ||
+			value.includes('executing') ||
+			value.includes('pending') ||
+			value.includes('started')
+		);
+	}
+
+	function isActiveTurn(turn: ThreadDetail['turns'][number]) {
+		return turn.completedAt === null && !isTerminalStatus(turn.status);
+	}
+
+	function findActiveTurnId(detail: ThreadDetail | null) {
+		const turns = detail?.turns ?? [];
+		for (let i = turns.length - 1; i >= 0; i--) {
+			if (isActiveTurn(turns[i])) return turns[i].id;
+		}
+		return null;
+	}
+
+	function reconcileRunningTurn(detail: ThreadDetail) {
+		const activeTurnId = findActiveTurnId(detail);
+		if (activeTurnId) {
+			runningTurnId = runningTurnId ?? activeTurnId;
+			return;
+		}
+
+		const matchingTurn = runningTurnId
+			? detail.turns.find((turn) => turn.id === runningTurnId)
+			: null;
+		if (!isActiveThreadStatus(detail.thread.status) || (matchingTurn && !isActiveTurn(matchingTurn))) {
+			runningTurnId = null;
+		}
+	}
+
+	function mergeEntry(base: TimelineEntry, patch: Partial<TimelineEntry>): TimelineEntry {
+		const startedAt =
+			base.startedAt && patch.startedAt
+				? Math.min(base.startedAt, patch.startedAt)
+				: (base.startedAt ?? patch.startedAt ?? Date.now());
+		const status =
+			isTerminalStatus(base.status) && !isTerminalStatus(patch.status)
+				? base.status
+				: (patch.status ?? base.status);
+		return {
+			...base,
+			...patch,
+			status,
+			startedAt,
+			completedAt: patch.completedAt ?? base.completedAt ?? null,
+			text:
+				(base.kind === 'reasoning' || patch.kind === 'reasoning') && base.text && !patch.text
+					? base.text
+					: (patch.text ?? base.text ?? ''),
+			output:
+				patch.output && patch.output.length > 0
+					? patch.output
+					: (base.output ?? patch.output ?? '')
+		};
+	}
+
+	function pruneLiveEntriesFromDetail(detail: ThreadDetail) {
+		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
+		liveEntries = Object.fromEntries(
+			Object.entries(liveEntries).filter(([itemId]) => !historicalIds.has(itemId))
+		);
+	}
+
 	async function openThread(threadId: string | null) {
 		if (!threadId) {
+			stashCurrentLiveEntries();
 			selectedThreadId = null;
 			selectedThread = null;
+			runningTurnId = null;
 			draftingThread = true;
 			followLiveOutput = true;
 			errorMessage = null;
@@ -165,25 +346,57 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			await goto(threadHref(null), { keepFocus: true, noScroll: true });
 			return;
 		}
+		if (selectedThreadId !== threadId) {
+			stashCurrentLiveEntries();
+			liveEntries = {};
+			runningTurnId = null;
+		}
 		draftingThread = false;
 		selectedThreadId = threadId;
+		flushLiveBuffer(threadId);
 		followLiveOutput = true;
 		errorMessage = null;
 		await goto(threadHref(threadId), { keepFocus: true, noScroll: true });
 	}
 
 	function updateLiveEntry(itemId: string, threadId: string, patch: Partial<TimelineEntry>, defaults?: Pick<TimelineEntry, 'kind' | 'label'>) {
-		if (threadId !== selectedThreadId) return;
-		const current = liveEntries[itemId];
-		const base = current ?? (defaults ? { id: itemId, ...defaults, text: '', output: '' } : { id: itemId, kind: 'system' as const, label: 'System', text: '', output: '' });
-		liveEntries = {
-			...liveEntries,
-			[itemId]: {
-				...base, ...patch,
-				text: (base.kind === 'reasoning' || patch.kind === 'reasoning') && base.text && !patch.text ? base.text : (patch.text ?? base.text ?? ''),
-				output: patch.output ?? base.output ?? ''
-			}
-		};
+		const selected = threadId === selectedThreadId;
+		const entries = selected ? liveEntries : (liveEntryBuffers[threadId] ?? {});
+		const current = entries[itemId];
+		const base = current ?? (defaults ? { id: itemId, ...defaults, text: '', output: '', startedAt: Date.now() } : { id: itemId, kind: 'system' as const, label: 'System', text: '', output: '', startedAt: Date.now() });
+		const next = { ...entries, [itemId]: mergeEntry(base, patch) };
+
+		if (selected) {
+			liveEntries = next;
+		} else {
+			liveEntryBuffers = { ...liveEntryBuffers, [threadId]: next };
+		}
+	}
+
+	function completeLiveEntriesForTurn(threadId: string, turnId: string) {
+		const entries = threadId === selectedThreadId ? liveEntries : (liveEntryBuffers[threadId] ?? {});
+		let changed = false;
+		const completedAt = Date.now();
+		const next = Object.fromEntries(
+			Object.entries(entries).map(([itemId, entry]) => {
+				if (entry.turnId !== turnId || entry.completedAt) return [itemId, entry];
+				changed = true;
+				return [
+					itemId,
+					mergeEntry(entry, {
+						status: entry.kind === 'command' ? 'completed' : entry.status,
+						completedAt,
+						durationMs: entry.startedAt ? completedAt - entry.startedAt : entry.durationMs
+					})
+				];
+			})
+		);
+		if (!changed) return;
+		if (threadId === selectedThreadId) {
+			liveEntries = next;
+		} else {
+			liveEntryBuffers = { ...liveEntryBuffers, [threadId]: next };
+		}
 	}
 
 	function rememberRuntimeReasoning(threadId: string) {
@@ -231,15 +444,22 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			bootErrorMessage = null;
 			errorMessage = null;
 			selectedThread = payload.detail;
+			reconcileRunningTurn(payload.detail);
 			approvals = payload.detail.approvals;
-			liveEntries = {};
+			pruneLiveEntriesFromDetail(payload.detail);
 			if (silent) {
 				await tick();
 				restoreScrollSnapshot(snapshot);
 				await new Promise<void>(r => requestAnimationFrame(() => { restoreScrollSnapshot(snapshot); r(); }));
 			}
 		} catch (error) {
-			errorMessage = error instanceof Error ? error.message : String(error);
+			const message = error instanceof Error ? error.message : String(error);
+			if (isThreadNotFound(error)) {
+				clearSelectedThreadState(message);
+				await goto(threadHref(null), { keepFocus: true, noScroll: true });
+			} else {
+				errorMessage = message;
+			}
 		} finally {
 			if (!silent) loadingThread = false;
 		}
@@ -257,13 +477,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		errorMessage = null;
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt: newPrompt }) }));
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt: newPrompt, permissionMode }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
 			draftingThread = false;
 			await loadThreads();
 			await openThread(payload.thread.id);
-		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (isThreadNotFound(error)) clearSelectedThreadState(message);
+			else errorMessage = message;
+		}
 		finally { submitting = false; }
 	}
 
@@ -274,7 +498,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		followLiveOutput = true;
 		errorMessage = null;
 		try {
-			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt: replyPrompt }) }));
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt: replyPrompt, permissionMode }) }));
 			bootErrorMessage = null;
 			replyPrompt = '';
 		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
@@ -287,7 +511,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		errorMessage = null;
 		try {
 			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/interrupt`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ turnId: interruptableTurnId }) }));
-		} catch (error) { errorMessage = error instanceof Error ? error.message : String(error); }
+		} catch (error) {
+			const message = error instanceof Error ? error.message : String(error);
+			if (isThreadNotFound(error)) clearSelectedThreadState(message);
+			else errorMessage = message;
+		}
 		finally { interrupting = false; }
 	}
 
@@ -425,15 +653,39 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (event.type === 'approval.resolved') { approvals = approvals.filter(a => a.requestId !== event.requestId); return; }
 		if (event.type === 'turn.completed') {
 			void loadThreads();
-			if (event.threadId === selectedThreadId) { runningTurnId = null; void loadThread(event.threadId, { silent: true }); }
+			completeLiveEntriesForTurn(event.threadId, event.turnId);
+			if (runningTurnId === event.turnId) runningTurnId = null;
+			if (event.threadId === selectedThreadId) { void loadThread(event.threadId, { silent: true }); }
 			return;
 		}
 		if (event.type === 'turn.started') { if (event.threadId === selectedThreadId) runningTurnId = event.turnId; return; }
-		if (event.type === 'item.started' || event.type === 'item.completed') { updateLiveEntry(event.item.id, event.threadId, event.item); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'message.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'assistant', label: 'Assistant' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'reasoning.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'command.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { output: `${c?.output ?? ''}${event.delta}` }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'file_change.delta') { const c = liveEntries[event.itemId]; updateLiveEntry(event.itemId, event.threadId, { text: `${c?.text ?? ''}${event.delta}` }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'item.started') {
+			updateLiveEntry(event.item.id, event.threadId, {
+				...event.item,
+				turnId: event.turnId,
+				startedAt: event.item.startedAt ?? Date.now()
+			});
+			maybeFollowLiveOutput(event.threadId);
+			return;
+		}
+		if (event.type === 'item.completed') {
+			const current = getLiveEntry(event.threadId, event.item.id);
+			const completedAt = event.item.completedAt ?? Date.now();
+			const startedAt = event.item.startedAt ?? current?.startedAt ?? null;
+			updateLiveEntry(event.item.id, event.threadId, {
+				...event.item,
+				turnId: event.turnId,
+				startedAt,
+				completedAt,
+				durationMs: event.item.durationMs ?? (startedAt ? completedAt - startedAt : null)
+			});
+			maybeFollowLiveOutput(event.threadId);
+			return;
+		}
+		if (event.type === 'message.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'assistant', label: 'Assistant' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'reasoning.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'command.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { ...event.item, turnId: event.turnId, output: `${c?.output ?? ''}${event.delta}` }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
+		if (event.type === 'file_change.delta') { const c = getLiveEntry(event.threadId, event.itemId); updateLiveEntry(event.itemId, event.threadId, { turnId: event.turnId, text: `${c?.text ?? ''}${event.delta}` }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
 		if (event.type === 'error') errorMessage = event.message;
 	}
 
@@ -453,6 +705,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	$effect(() => {
 		if (authenticated && selectedThreadId && selectedThread?.thread.id !== selectedThreadId) void loadThread(selectedThreadId);
+	});
+
+	$effect(() => {
+		if (selectedThreadId) flushLiveBuffer(selectedThreadId);
+	});
+
+	$effect(() => {
+		const threadId = selectedThreadId;
+		if (!authenticated || !threadId || !interruptableTurnId) return;
+		const timer = window.setInterval(() => {
+			void loadThread(threadId, { silent: true });
+		}, 5000);
+		return () => window.clearInterval(timer);
 	});
 
 	$effect(() => {
@@ -484,6 +749,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			selectedThread = null;
 			approvals = [];
 			liveEntries = {};
+			liveEntryBuffers = {};
 			draftingThread = true;
 			return;
 		}
@@ -496,6 +762,73 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 	});
 </script>
+
+{#snippet permissionIcon(mode: PermissionMode)}
+	<svg viewBox="0 0 20 20" aria-hidden="true" fill="none" stroke="currentColor" stroke-width="1.6" stroke-linecap="round" stroke-linejoin="round">
+		{#if mode === 'default'}
+			<path d="M7.5 10.4V5.8a1.3 1.3 0 0 1 2.6 0v4" />
+			<path d="M10.1 9.4V4.8a1.3 1.3 0 0 1 2.6 0v5" />
+			<path d="M12.7 9.8V6.2a1.3 1.3 0 0 1 2.6 0v5.4c0 3-1.9 5.4-5 5.4H9.1a5 5 0 0 1-4.2-2.3l-2-3.1a1.25 1.25 0 0 1 2-1.5l1.3 1.4" />
+		{:else if mode === 'auto'}
+			<path d="M10 2.6 15.7 5v4.5c0 3.3-2.2 6.2-5.7 7.8-3.5-1.6-5.7-4.5-5.7-7.8V5L10 2.6z" />
+			<path d="M7.4 10.1 9.1 11.8 12.8 8" />
+		{:else}
+			<path d="M10 2.6 15.7 5v4.5c0 3.3-2.2 6.2-5.7 7.8-3.5-1.6-5.7-4.5-5.7-7.8V5L10 2.6z" />
+			<path d="M10 6.4v4.3" />
+			<path d="M10 13.6h.01" />
+		{/if}
+	</svg>
+{/snippet}
+
+{#snippet permissionPicker()}
+	<div class="permission-picker">
+		<button
+			type="button"
+			class:full={permissionMode === 'full'}
+			class="permission-trigger"
+			aria-haspopup="menu"
+			aria-expanded={permissionMenuOpen}
+			onclick={(event) => { event.stopPropagation(); permissionMenuOpen = !permissionMenuOpen; }}
+		>
+			<span class="permission-trigger-icon">{@render permissionIcon(selectedPermission.mode)}</span>
+			<span>{selectedPermission.label}</span>
+			<svg class="permission-chevron" viewBox="0 0 20 20" aria-hidden="true">
+				<path d="M6 8 10 12 14 8" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
+			</svg>
+		</button>
+		{#if permissionMenuOpen}
+			<div class="permission-menu" role="menu" tabindex="-1">
+				{#each permissionOptions as option}
+					<button
+						type="button"
+						class:selected={permissionMode === option.mode}
+						class:full={option.mode === 'full'}
+						class="permission-option"
+						role="menuitemradio"
+						aria-checked={permissionMode === option.mode}
+						onclick={() => selectPermissionMode(option.mode)}
+					>
+						<span class="permission-option-icon">{@render permissionIcon(option.mode)}</span>
+						<span class="permission-option-copy">
+							<span>{option.label}</span>
+							<small>{option.description}</small>
+						</span>
+						{#if permissionMode === option.mode}
+							<svg class="permission-check" viewBox="0 0 20 20" aria-hidden="true">
+								<path d="M4 10.5 8 14 16 6" fill="none" stroke="currentColor" stroke-width="1.9" stroke-linecap="round" stroke-linejoin="round" />
+							</svg>
+						{/if}
+					</button>
+				{/each}
+			</div>
+		{/if}
+	</div>
+{/snippet}
+
+<svelte:window
+	onclick={() => { permissionMenuOpen = false; }}
+	onkeydown={(event) => { if (event.key === 'Escape') permissionMenuOpen = false; }}
+/>
 
 {#if !authenticated}
 	<LoginView
@@ -597,9 +930,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 									onkeydown={(e) => submitOnEnter(e, () => void createThread())}
 								></textarea>
 							</div>
-							<button onclick={() => void createThread()} disabled={submitting}>
-								{submitting ? 'Starting…' : 'Start thread'}
-							</button>
+							<div class="compose-actions">
+								{@render permissionPicker()}
+								<button onclick={() => void createThread()} disabled={submitting}>
+									{submitting ? 'Starting…' : 'Start thread'}
+								</button>
+							</div>
 						</div>
 					</div>
 				{:else if loadingThread}
@@ -655,6 +991,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
 						></textarea>
 						<div class="reply-actions">
+							{@render permissionPicker()}
 							<button
 								onclick={() => void sendReply()}
 								disabled={submitting || interrupting || Boolean(interruptableTurnId)}

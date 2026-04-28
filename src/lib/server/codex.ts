@@ -6,6 +6,7 @@ import type {
 	ApprovalRequest,
 	ConsoleEvent,
 	DirectoryListing,
+	PermissionMode,
 	ThreadDetail,
 	ThreadSummary,
 	TimelineEntry,
@@ -59,7 +60,26 @@ type PendingApproval = ApprovalRequest & {
 	params: Record<string, unknown>;
 };
 
+type ApprovalPolicy = 'on-request' | 'on-failure' | 'never';
+type SandboxName = 'workspace-write' | 'danger-full-access';
+type ApprovalsReviewer = 'user' | 'auto_review';
+
 const REQUEST_TIMEOUT_MS = 30_000;
+const DIAGNOSTIC_PREVIEW_LIMIT = 800;
+
+function stripTerminalControls(value: string): string {
+	return value
+		.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+		.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
+function diagnosticPreview(value: string): string {
+	const sanitized = stripTerminalControls(value).trim();
+	return sanitized.length > DIAGNOSTIC_PREVIEW_LIMIT
+		? `${sanitized.slice(0, DIAGNOSTIC_PREVIEW_LIMIT)}...`
+		: sanitized;
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -67,6 +87,17 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readCommand(value: unknown): string | null {
+	return readString(value) ??
+		(Array.isArray(value)
+			? value.filter((entry): entry is string => typeof entry === 'string').join(' ')
+			: null);
+}
+
+function readNumber(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function normalizeThreadStatus(status: ThreadStatus): string {
@@ -83,6 +114,64 @@ function normalizeTimestamp(value: number | null | undefined): number | null {
 	}
 
 	return value < 10_000_000_000 ? value * 1000 : value;
+}
+
+function readThreadId(params: Record<string, unknown>): string | null {
+	return readString(params.threadId) ?? readString(asRecord(params.thread)?.id);
+}
+
+function readTurnId(params: Record<string, unknown>): string | null {
+	return readString(params.turnId) ?? readString(asRecord(params.turn)?.id);
+}
+
+function readItemId(params: Record<string, unknown>): string | null {
+	return readString(params.itemId) ?? readString(asRecord(params.item)?.id);
+}
+
+function normalizeCommandExecutionEvent(
+	itemId: string,
+	params: Record<string, unknown>,
+	fallbackStatus: string
+): TimelineEntry {
+	const item = asRecord(params.item);
+	if (item?.type === 'commandExecution') {
+		const normalized = normalizeTimelineEntry({
+			...item,
+			id: readString(item.id) ?? itemId,
+			type: 'commandExecution'
+		});
+		if (normalized.kind === 'command') {
+			normalized.status ??= fallbackStatus;
+			if (fallbackStatus === 'completed' || fallbackStatus === 'finished') {
+				normalized.completedAt ??= Date.now();
+			}
+		}
+		return normalized;
+	}
+
+	const output = readString(params.aggregatedOutput) ?? readString(params.output);
+	const startedAt = normalizeTimestamp(readNumber(params.startedAt) ?? readNumber(params.started_at));
+	const completedAt =
+		normalizeTimestamp(readNumber(params.completedAt) ?? readNumber(params.completed_at)) ??
+		(fallbackStatus === 'completed' || fallbackStatus === 'finished' ? Date.now() : null);
+	const entry: TimelineEntry = {
+		id: itemId,
+		kind: 'command',
+		label: 'Command',
+		command: readCommand(params.command) ?? '',
+		cwd: readString(params.cwd) ?? '',
+		exitCode: readNumber(params.exitCode),
+		status: readString(params.status) ?? fallbackStatus,
+		startedAt: startedAt ?? (fallbackStatus === 'running' ? Date.now() : null),
+		completedAt,
+		durationMs: readNumber(params.durationMs) ?? readNumber(params.duration_ms)
+	};
+
+	if (output !== null) {
+		entry.output = output;
+	}
+
+	return entry;
 }
 
 function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
@@ -166,9 +255,11 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				command: readString(item.command) ?? '',
 				cwd: readString(item.cwd) ?? '',
 				output: readString(item.aggregatedOutput) ?? '',
-				exitCode: typeof item.exitCode === 'number' ? item.exitCode : null,
+				exitCode: readNumber(item.exitCode),
 				status: readString(item.status),
-				durationMs: typeof item.durationMs === 'number' ? item.durationMs : null
+				startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+				completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+				durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms)
 			};
 		case 'fileChange':
 			return {
@@ -244,6 +335,41 @@ function buildWorkspaceWritePolicy(cwd: string) {
 	};
 }
 
+function normalizePermissionMode(mode: PermissionMode | null | undefined): PermissionMode {
+	return mode === 'auto' || mode === 'full' ? mode : 'default';
+}
+
+function permissionRuntime(cwd: string, mode: PermissionMode | null | undefined): {
+	approvalPolicy: ApprovalPolicy;
+	approvalsReviewer: ApprovalsReviewer;
+	sandbox: SandboxName;
+	sandboxPolicy: Record<string, unknown>;
+} {
+	switch (normalizePermissionMode(mode)) {
+		case 'auto':
+			return {
+				approvalPolicy: 'on-request',
+				approvalsReviewer: 'auto_review',
+				sandbox: 'workspace-write',
+				sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			};
+		case 'full':
+			return {
+				approvalPolicy: 'never',
+				approvalsReviewer: 'user',
+				sandbox: 'danger-full-access',
+				sandboxPolicy: { type: 'dangerFullAccess' }
+			};
+		default:
+			return {
+				approvalPolicy: 'on-request',
+				approvalsReviewer: 'user',
+				sandbox: 'workspace-write',
+				sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			};
+	}
+}
+
 function approvalTitle(method: string): string {
 	if (method === 'item/commandExecution/requestApproval') {
 		return 'Command requires approval';
@@ -273,11 +399,7 @@ function serializeApproval(
 		return null;
 	}
 
-	const command =
-		readString(params.command) ||
-		(Array.isArray(params.command)
-			? params.command.filter((value): value is string => typeof value === 'string').join(' ')
-			: null);
+	const command = readCommand(params.command);
 
 	return {
 		requestId: String(rpcId),
@@ -290,6 +412,7 @@ function serializeApproval(
 		command,
 		cwd: readString(params.cwd),
 		grantRoot: readString(params.grantRoot),
+		requestedAt: Date.now(),
 		params
 	};
 }
@@ -346,13 +469,15 @@ class LocalCodexService {
 		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId));
 	}
 
-	async createThread(cwd: string, prompt: string): Promise<ThreadSummary> {
+	async createThread(cwd: string, prompt: string, permissionMode?: PermissionMode): Promise<ThreadSummary> {
 		await this.ensureStarted();
+		const permissions = permissionRuntime(cwd, permissionMode);
 
 		const response = (await this.request('thread/start', {
 			cwd,
-			approvalPolicy: 'on-request',
-			sandbox: 'workspace-write',
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandbox: permissions.sandbox,
 			experimentalRawEvents: false,
 			persistExtendedHistory: true
 		})) as { thread: ThreadRecord };
@@ -366,20 +491,29 @@ class LocalCodexService {
 					text_elements: []
 				}
 			],
-			approvalPolicy: 'on-request',
-			sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandboxPolicy: permissions.sandboxPolicy
 		});
 
 		return normalizeThreadSummary(response.thread);
 	}
 
-	async sendMessage(threadId: string, cwd: string, prompt: string): Promise<void> {
+	async sendMessage(
+		threadId: string,
+		cwd: string,
+		prompt: string,
+		permissionMode?: PermissionMode
+	): Promise<void> {
 		await this.ensureStarted();
+		const permissions = permissionRuntime(cwd, permissionMode);
+
 		await this.request('thread/resume', {
 			threadId,
 			cwd,
-			approvalPolicy: 'on-request',
-			sandbox: 'workspace-write',
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandbox: permissions.sandbox,
 			persistExtendedHistory: true
 		});
 
@@ -393,8 +527,9 @@ class LocalCodexService {
 				}
 			],
 			cwd,
-			approvalPolicy: 'on-request',
-			sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandboxPolicy: permissions.sandboxPolicy
 		});
 	}
 
@@ -501,9 +636,9 @@ class LocalCodexService {
 		});
 
 		this.process.stderr.on('data', (chunk: Buffer) => {
-			const message = chunk.toString('utf8').trim();
+			const message = diagnosticPreview(chunk.toString('utf8'));
 			if (message) {
-				this.emit({ type: 'error', message });
+				console.warn(`[codex app-server] ${message}`);
 			}
 		});
 
@@ -583,7 +718,7 @@ class LocalCodexService {
 		try {
 			message = JSON.parse(trimmed) as JsonRpcResponse | JsonRpcNotification;
 		} catch {
-			this.emit({ type: 'error', message: trimmed });
+			this.emit({ type: 'error', message: `Unexpected app-server output: ${diagnosticPreview(trimmed)}` });
 			return;
 		}
 
@@ -646,7 +781,8 @@ class LocalCodexService {
 					reason: approval.reason,
 					command: approval.command,
 					cwd: approval.cwd,
-					grantRoot: approval.grantRoot
+					grantRoot: approval.grantRoot,
+					requestedAt: approval.requestedAt
 				}
 			});
 			return;
@@ -667,8 +803,8 @@ class LocalCodexService {
 		}
 
 		if (method === 'turn/started' || method === 'turn/completed') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(asRecord(safeParams.turn)?.id);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
 			if (threadId && turnId) {
 				this.emit({
 					type: method === 'turn/started' ? 'turn.started' : 'turn.completed',
@@ -680,9 +816,9 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/agentMessage/delta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'message.delta', threadId, turnId, itemId, delta });
@@ -691,9 +827,9 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/reasoning/summaryTextDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'reasoning.delta', threadId, turnId, itemId, delta });
@@ -702,20 +838,50 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/commandExecution/outputDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
-				this.emit({ type: 'command.delta', threadId, turnId, itemId, delta });
+				this.emit({
+					type: 'command.delta',
+					threadId,
+					turnId,
+					itemId,
+					delta,
+					item: normalizeCommandExecutionEvent(itemId, safeParams, 'running')
+				});
+			}
+			return;
+		}
+
+		if (
+			method === 'item/commandExecution/started' ||
+			method === 'item/commandExecution/completed' ||
+			method === 'item/commandExecution/finished'
+		) {
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
+
+			if (threadId && turnId && itemId) {
+				const completed =
+					method === 'item/commandExecution/completed' ||
+					method === 'item/commandExecution/finished';
+				this.emit({
+					type: completed ? 'item.completed' : 'item.started',
+					threadId,
+					turnId,
+					item: normalizeCommandExecutionEvent(itemId, safeParams, completed ? 'completed' : 'running')
+				});
 			}
 			return;
 		}
 
 		if (method === 'item/fileChange/outputDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'file_change.delta', threadId, turnId, itemId, delta });
@@ -724,16 +890,21 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/started' || method === 'item/completed') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
 			const item = asRecord(safeParams.item) as ThreadItem | null;
 
 			if (threadId && turnId && item) {
+				const normalized = normalizeTimelineEntry(item);
+				if (method === 'item/completed' && normalized.kind === 'command') {
+					normalized.status ??= 'completed';
+					normalized.completedAt ??= Date.now();
+				}
 				this.emit({
 					type: method === 'item/started' ? 'item.started' : 'item.completed',
 					threadId,
 					turnId,
-					item: normalizeTimelineEntry(item)
+					item: normalized
 				});
 			}
 			return;

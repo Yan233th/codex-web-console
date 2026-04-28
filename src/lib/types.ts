@@ -8,6 +8,8 @@ export type EntryKind =
 	| 'plan'
 	| 'system';
 
+export type PermissionMode = 'default' | 'auto' | 'full';
+
 export interface ThreadSummary {
 	id: string;
 	title: string;
@@ -20,6 +22,7 @@ export interface ThreadSummary {
 
 export interface TimelineEntry {
 	id: string;
+	turnId?: string;
 	kind: EntryKind;
 	label: string;
 	text?: string;
@@ -34,6 +37,8 @@ export interface TimelineEntry {
 	queries?: string[];
 	exitCode?: number | null;
 	status?: string | null;
+	startedAt?: number | null;
+	completedAt?: number | null;
 	durationMs?: number | null;
 	changes?: Array<{
 		path: string;
@@ -61,6 +66,7 @@ export interface ApprovalRequest {
 	command: string | null;
 	cwd: string | null;
 	grantRoot: string | null;
+	requestedAt: number;
 }
 
 export interface ThreadDetail {
@@ -102,6 +108,7 @@ export type ConsoleEvent =
 			turnId: string;
 			itemId: string;
 			delta: string;
+			item?: Partial<TimelineEntry>;
 	  }
 	| {
 			type: 'approval.requested';
