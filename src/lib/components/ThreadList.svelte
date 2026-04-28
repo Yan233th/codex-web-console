@@ -20,11 +20,43 @@
 		onSelect: (threadId: string) => void;
 	} = $props();
 
+	const collapsedWorkspaceStorageKey = 'codex-web-console.collapsedWorkspaces';
+	const expandedThreadListStorageKey = 'codex-web-console.expandedThreadLists';
+
 	let collapsedWorkspaceKeys = $state<string[]>([]);
 	let expandedThreadListKeys = $state<string[]>([]);
+	let knownWorkspaceKeys = $state<string[]>([]);
+	let restoredCollapseState = $state(false);
 
 	const maxCollapsedThreads = 5;
 	const threadGroups = $derived.by(() => groupThreadsByWorkspace(threads));
+
+	function readStoredKeys(key: string): string[] | null {
+		if (typeof localStorage === 'undefined') return null;
+
+		try {
+			const parsed = JSON.parse(localStorage.getItem(key) ?? 'null');
+			return Array.isArray(parsed)
+				? parsed.filter((value): value is string => typeof value === 'string')
+				: null;
+		} catch {
+			return null;
+		}
+	}
+
+	function writeStoredKeys(key: string, value: string[]) {
+		if (typeof localStorage === 'undefined') return;
+		localStorage.setItem(key, JSON.stringify(value));
+	}
+
+	function sameKeys(left: string[], right: string[]) {
+		if (left.length !== right.length) return false;
+		return left.every((value, index) => value === right[index]);
+	}
+
+	function uniqueKeys(keys: string[]) {
+		return [...new Set(keys)];
+	}
 
 	function normalizeWorkspacePath(cwd: string): string {
 		const trimmed = cwd.trim().replace(/[\\/]+$/, '') || 'Unknown workspace';
@@ -95,17 +127,11 @@
 		return '';
 	}
 
-	function groupHasSelectedThread(group: ThreadGroup): boolean {
-		return group.threads.some((thread) => thread.id === selectedThreadId);
-	}
-
 	function isGroupCollapsed(group: ThreadGroup): boolean {
-		return !groupHasSelectedThread(group) && collapsedWorkspaceKeys.includes(group.key);
+		return collapsedWorkspaceKeys.includes(group.key);
 	}
 
 	function toggleGroup(group: ThreadGroup) {
-		if (groupHasSelectedThread(group)) return;
-
 		if (collapsedWorkspaceKeys.includes(group.key)) {
 			collapsedWorkspaceKeys = collapsedWorkspaceKeys.filter((key) => key !== group.key);
 		} else {
@@ -145,6 +171,43 @@
 			expandedThreadListKeys = [...expandedThreadListKeys, group.key];
 		}
 	}
+
+	$effect(() => {
+		const groupKeys = threadGroups.map((group) => group.key);
+
+		if (!restoredCollapseState) {
+			collapsedWorkspaceKeys = readStoredKeys(collapsedWorkspaceStorageKey) ?? groupKeys;
+			expandedThreadListKeys = readStoredKeys(expandedThreadListStorageKey) ?? [];
+			knownWorkspaceKeys = groupKeys;
+			restoredCollapseState = true;
+			return;
+		}
+
+		const existingGroupKeys = new Set(groupKeys);
+		const known = new Set(knownWorkspaceKeys);
+		const newGroupKeys = groupKeys.filter((key) => !known.has(key));
+		const nextCollapsedKeys = uniqueKeys([
+			...collapsedWorkspaceKeys.filter((key) => existingGroupKeys.has(key)),
+			...newGroupKeys
+		]);
+		const nextExpandedKeys = expandedThreadListKeys.filter((key) => existingGroupKeys.has(key));
+
+		if (!sameKeys(collapsedWorkspaceKeys, nextCollapsedKeys)) {
+			collapsedWorkspaceKeys = nextCollapsedKeys;
+		}
+		if (!sameKeys(expandedThreadListKeys, nextExpandedKeys)) {
+			expandedThreadListKeys = nextExpandedKeys;
+		}
+		if (!sameKeys(knownWorkspaceKeys, groupKeys)) {
+			knownWorkspaceKeys = groupKeys;
+		}
+	});
+
+	$effect(() => {
+		if (!restoredCollapseState) return;
+		writeStoredKeys(collapsedWorkspaceStorageKey, collapsedWorkspaceKeys);
+		writeStoredKeys(expandedThreadListStorageKey, expandedThreadListKeys);
+	});
 </script>
 
 <section class="thread-list">

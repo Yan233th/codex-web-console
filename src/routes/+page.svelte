@@ -53,6 +53,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let replyPrompt = $state('');
 	let providerFilter = $state('all');
 	let sidebarCollapsed = $state(false);
+	let sidebarCollapseRestored = $state(false);
+	let lastThreadRestored = $state(false);
 	let draftingThread = $state(false);
 	let errorMessage = $state<string | null>(null);
 	let bootErrorMessage = $state<string | null>(null);
@@ -205,6 +207,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (liveConnectionState === 'reconnecting') return 'Disconnected. Reconnecting…';
 		return null;
 	});
+	const LAST_THREAD_STORAGE_KEY = 'lastThreadId';
 
 	const enhanceRedirect: SubmitFunction = () => {
 		return async ({ result, update }) => {
@@ -240,6 +243,46 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				: null;
 		if (saved === 'default' || saved === 'auto' || saved === 'full') {
 			permissionMode = saved;
+		}
+	});
+
+	$effect(() => {
+		if (!authenticated || typeof localStorage === 'undefined' || sidebarCollapseRestored) return;
+		const saved = localStorage.getItem('sidebarCollapsed');
+		if (saved === 'true' || saved === 'false') {
+			sidebarCollapsed = saved === 'true';
+		}
+		sidebarCollapseRestored = true;
+	});
+
+	$effect(() => {
+		if (!authenticated || typeof localStorage === 'undefined' || !sidebarCollapseRestored) return;
+		localStorage.setItem('sidebarCollapsed', String(sidebarCollapsed));
+	});
+
+	$effect(() => {
+		if (!authenticated || typeof localStorage === 'undefined' || !selectedThreadId) return;
+		localStorage.setItem(LAST_THREAD_STORAGE_KEY, selectedThreadId);
+	});
+
+	$effect(() => {
+		if (!authenticated || typeof localStorage === 'undefined' || lastThreadRestored) return;
+		if (typeof window !== 'undefined' && new URLSearchParams(window.location.search).has('thread')) {
+			lastThreadRestored = true;
+			return;
+		}
+		if (data.selectedThread) {
+			lastThreadRestored = true;
+			return;
+		}
+		if (!allThreads.length) return;
+
+		lastThreadRestored = true;
+		const savedThreadId = localStorage.getItem(LAST_THREAD_STORAGE_KEY);
+		if (savedThreadId && allThreads.some((thread) => thread.id === savedThreadId)) {
+			void openThread(savedThreadId);
+		} else if (savedThreadId) {
+			localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
 		}
 	});
 
@@ -595,6 +638,94 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		pushState(href, {});
 	}
 
+	function pendingTurnId() {
+		return `pending-${Date.now()}-${Math.random().toString(36).slice(2)}`;
+	}
+
+	function createOptimisticTurn(prompt: string): ThreadDetail['turns'][number] {
+		const id = pendingTurnId();
+		return {
+			id,
+			status: 'starting',
+			startedAt: Date.now(),
+			completedAt: null,
+			durationMs: null,
+			entries: [
+				{
+					id: `${id}-user`,
+					kind: 'user',
+					label: 'You',
+					text: prompt
+				}
+			]
+		};
+	}
+
+	function appendOptimisticTurn(prompt: string) {
+		if (!selectedThread) return null;
+		const turn = createOptimisticTurn(prompt);
+		selectedThread = {
+			...selectedThread,
+			thread: {
+				...selectedThread.thread,
+				status: 'active',
+				updatedAt: Date.now()
+			},
+			turns: [...selectedThread.turns, turn]
+		};
+		runningTurnId = turn.id;
+		return turn.id;
+	}
+
+	function removeOptimisticTurn(turnId: string | null) {
+		if (!turnId || !selectedThread) return;
+		selectedThread = {
+			...selectedThread,
+			turns: selectedThread.turns.filter((turn) => turn.id !== turnId)
+		};
+		if (runningTurnId === turnId) runningTurnId = null;
+	}
+
+	function replaceOptimisticTurnId(realTurnId: string) {
+		if (!selectedThread) return;
+		const index = selectedThread.turns.findIndex((turn) => turn.id.startsWith('pending-') && isActiveTurn(turn));
+		if (index < 0) return;
+		const turns = [...selectedThread.turns];
+		const turn = turns[index];
+		turns[index] = {
+			...turn,
+			id: realTurnId,
+			status: 'inprogress',
+			entries: turn.entries.map((entry) => ({
+				...entry,
+				id: entry.id === `${turn.id}-user` ? `${realTurnId}-user` : entry.id,
+				turnId: realTurnId
+			}))
+		};
+		selectedThread = { ...selectedThread, turns };
+	}
+
+	function mergeLocalActiveTurns(detail: ThreadDetail): ThreadDetail {
+		if (!selectedThread || selectedThread.thread.id !== detail.thread.id) return detail;
+		const historicalTexts = new Set(
+			detail.turns
+				.flatMap((turn) => turn.entries)
+				.filter((entry) => entry.kind === 'user' && entry.text?.trim())
+				.map((entry) => entry.text?.trim() ?? '')
+		);
+		const historicalTurnIds = new Set(detail.turns.map((turn) => turn.id));
+		const localTurns = selectedThread.turns.filter((turn) => {
+			if (!isActiveTurn(turn) || historicalTurnIds.has(turn.id)) return false;
+			const prompt = turn.entries.find((entry) => entry.kind === 'user')?.text?.trim();
+			return Boolean(prompt && !historicalTexts.has(prompt));
+		});
+		if (localTurns.length === 0) return detail;
+		return {
+			...detail,
+			turns: [...detail.turns, ...localTurns]
+		};
+	}
+
 	async function openThread(threadId: string | null) {
 		collapseSidebarOnMobile();
 		if (!threadId) {
@@ -716,12 +847,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				);
 			const suffix = keepFullHistory ? '' : '?tailTurns=5';
 			const payload = await readJson<{ detail: ThreadDetail }>(await fetch(`/api/threads/${threadId}${suffix}`));
+			const detail = mergeLocalActiveTurns(payload.detail);
 			bootErrorMessage = null;
 			errorMessage = null;
-			selectedThread = payload.detail;
-			reconcileRunningTurn(payload.detail);
-			approvals = payload.detail.approvals;
-			pruneLiveEntriesFromDetail(payload.detail);
+			selectedThread = detail;
+			reconcileRunningTurn(detail);
+			approvals = detail.approvals;
+			pruneLiveEntriesFromDetail(detail);
 			if (silent) {
 				await tick();
 				restoreScrollSnapshot(snapshot);
@@ -762,37 +894,20 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			bootErrorMessage = null;
 			newPrompt = '';
 			draftingThread = false;
-			const pendingTurnId = `pending-${Date.now()}`;
+			const optimisticTurn = createOptimisticTurn(prompt);
 			threads = [payload.thread, ...threads.filter((thread) => thread.id !== payload.thread.id)];
 			selectedThreadId = payload.thread.id;
 			selectedThread = {
 				thread: payload.thread,
-				turns: [
-					{
-						id: pendingTurnId,
-						status: 'inprogress',
-						startedAt: Date.now(),
-						completedAt: null,
-						durationMs: null,
-						entries: [
-							{
-								id: `${pendingTurnId}-user`,
-								kind: 'user',
-								label: 'You',
-								text: prompt
-							}
-						]
-					}
-				],
+				turns: [optimisticTurn],
 				approvals: [],
 				omittedTurnCount: 0
 			};
-			runningTurnId = pendingTurnId;
+			runningTurnId = optimisticTurn.id;
 			approvals = [];
 			liveEntries = {};
 			updateThreadUrl(payload.thread.id);
 			void loadThreads();
-			void loadThread(payload.thread.id, { silent: true });
 		} catch (error) {
 			const message = error instanceof Error ? error.message : String(error);
 			if (isThreadNotFound(error)) clearSelectedThreadState(message);
@@ -809,10 +924,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		followLiveOutput = true;
 		errorMessage = null;
 		replyPrompt = '';
+		const optimisticTurnId = appendOptimisticTurn(prompt);
+		await tick();
+		scrollMainTo('bottom', 'auto');
 		try {
 			await readJson<{ ok: true }>(await fetch(`/api/threads/${selectedThread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: selectedThread.thread.cwd, prompt, permissionMode }) }));
 			bootErrorMessage = null;
-		} catch (error) { replyPrompt = prompt; errorMessage = error instanceof Error ? error.message : String(error); }
+		} catch (error) { removeOptimisticTurn(optimisticTurnId); replyPrompt = prompt; errorMessage = error instanceof Error ? error.message : String(error); }
 		finally { submitting = false; }
 	}
 
@@ -988,7 +1106,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			if (event.threadId === selectedThreadId) { void loadThread(event.threadId, { silent: true }); }
 			return;
 		}
-		if (event.type === 'turn.started') { if (event.threadId === selectedThreadId) runningTurnId = event.turnId; return; }
+		if (event.type === 'turn.started') {
+			if (event.threadId === selectedThreadId) {
+				replaceOptimisticTurnId(event.turnId);
+				runningTurnId = event.turnId;
+			}
+			return;
+		}
 		if (event.type === 'item.started') {
 			queueLiveEntryUpdate(event.item.id, event.threadId, {
 				...event.item,

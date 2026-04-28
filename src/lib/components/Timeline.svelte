@@ -26,6 +26,20 @@
 	const liveIsRunning = $derived(liveEntries.some(isActiveCommand));
 	let now = $state(Date.now());
 
+	type ChangeStats = {
+		path: string;
+		kind: string;
+		additions: number;
+		deletions: number;
+		diff: string;
+	};
+
+	type ChangeSummary = {
+		files: ChangeStats[];
+		additions: number;
+		deletions: number;
+	};
+
 	function loadMore() {
 		visibleCount = Math.min(turns.length, visibleCount + BATCH);
 	}
@@ -207,6 +221,62 @@
 		return batches.find((batch) => batch.index === index) ?? null;
 	}
 
+	function diffStats(diff: string) {
+		let additions = 0;
+		let deletions = 0;
+
+		for (const line of diff.split(/\r?\n/)) {
+			if (line.startsWith('+++') || line.startsWith('---')) continue;
+			if (line.startsWith('+')) additions += 1;
+			if (line.startsWith('-')) deletions += 1;
+		}
+
+		return { additions, deletions };
+	}
+
+	function fileName(filePath: string) {
+		return filePath.split(/[\\/]/).filter(Boolean).at(-1) ?? filePath;
+	}
+
+	function buildChangeSummary(entries: TimelineEntry[]): ChangeSummary | null {
+		const files = new Map<string, ChangeStats>();
+
+		for (const entry of entries) {
+			if (entry.kind !== 'file_change' || !entry.changes) continue;
+
+			for (const change of entry.changes) {
+				if (!change.path) continue;
+
+				const stats = diffStats(change.diff);
+				const current = files.get(change.path);
+				if (current) {
+					current.kind = change.kind || current.kind;
+					current.additions += stats.additions;
+					current.deletions += stats.deletions;
+					current.diff = [current.diff, change.diff].filter(Boolean).join('\n\n');
+					continue;
+				}
+
+				files.set(change.path, {
+					path: change.path,
+					kind: change.kind,
+					additions: stats.additions,
+					deletions: stats.deletions,
+					diff: change.diff
+				});
+			}
+		}
+
+		const fileList = [...files.values()];
+		if (fileList.length === 0) return null;
+
+		return {
+			files: fileList,
+			additions: fileList.reduce((total, file) => total + file.additions, 0),
+			deletions: fileList.reduce((total, file) => total + file.deletions, 0)
+		};
+	}
+
 	// Codex-style folding: keep user/final messages visible, fold reasoning and tools into a turn-level row.
 	function analyseTurn(entries: TimelineEntry[]) {
 		const hasFinalAnswer = entries.some(isFinalAnswer);
@@ -341,6 +411,37 @@
 	</details>
 {/snippet}
 
+{#snippet renderChangeSummary(summary: ChangeSummary)}
+	<section class="file-change-summary" aria-label="文件变更摘要">
+		<div class="file-change-header">
+			<div class="file-change-title">
+				<strong>{summary.files.length} 个文件已更改</strong>
+				<span class="diff-add">+{summary.additions}</span>
+				<span class="diff-del">-{summary.deletions}</span>
+			</div>
+		</div>
+
+		<div class="changed-file-list">
+			{#each summary.files as file (file.path)}
+				<details class="changed-file">
+					<summary>
+						<span class="changed-file-name" title={file.path}>{fileName(file.path)}</span>
+						<span class="changed-file-stats">
+							<span class="diff-add">+{file.additions}</span>
+							<span class="diff-del">-{file.deletions}</span>
+						</span>
+						<span class="changed-file-dot" title={file.kind}></span>
+						<span class="changed-file-chevron" aria-hidden="true">⌄</span>
+					</summary>
+					{#if file.diff}
+						<pre class="changed-file-diff">{file.diff}</pre>
+					{/if}
+				</details>
+			{/each}
+		</div>
+	</section>
+{/snippet}
+
 <section class="timeline">
 	{#if omittedTurnCount > 0 && onLoadFullHistory}
 		<div class="load-more-strip">
@@ -364,6 +465,7 @@
 
 	{#each visibleTurns as turn (turn.id)}
 		{@const analysis = analyseTurn(turn.entries)}
+		{@const changeSummary = buildChangeSummary(turn.entries)}
 		<section class="turn" id={`turn-${turn.id}`} data-turn-id={turn.id}>
 			<div class="turn-meta">
 				<span class="dot"></span>
@@ -401,6 +503,10 @@
 				{#each turn.entries as entry (entry.id)}
 					{@render renderEntry(entry)}
 				{/each}
+			{/if}
+
+			{#if turn.completedAt !== null && changeSummary}
+				{@render renderChangeSummary(changeSummary)}
 			{/if}
 		</section>
 	{/each}

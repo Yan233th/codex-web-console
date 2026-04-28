@@ -591,29 +591,34 @@ class LocalCodexService {
 		await this.ensureStarted();
 		const permissions = permissionRuntime(cwd, permissionMode);
 
-		await this.request('thread/resume', {
+		void this.request('thread/resume', {
 			threadId,
 			cwd,
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
 			persistExtendedHistory: true
-		});
-
-		this.enqueueRequest('turn/start', {
-			threadId,
-			input: [
-				{
-					type: 'text',
-					text: prompt,
-					text_elements: []
-				}
-			],
-			cwd,
-			approvalPolicy: permissions.approvalPolicy,
-			approvalsReviewer: permissions.approvalsReviewer,
-			sandboxPolicy: permissions.sandboxPolicy
-		}, 'Failed to start turn');
+		})
+			.then(() =>
+				this.request('turn/start', {
+					threadId,
+					input: [
+						{
+							type: 'text',
+							text: prompt,
+							text_elements: []
+						}
+					],
+					cwd,
+					approvalPolicy: permissions.approvalPolicy,
+					approvalsReviewer: permissions.approvalsReviewer,
+					sandboxPolicy: permissions.sandboxPolicy
+				})
+			)
+			.catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.emit({ type: 'error', message: `Failed to send message: ${message}` });
+			});
 	}
 
 	async interruptTurn(threadId: string, turnId: string): Promise<void> {
