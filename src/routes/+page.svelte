@@ -40,6 +40,11 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		};
 	} = $props();
 
+	type SequencedConsoleEvent = {
+		id: number;
+		event: ConsoleEvent;
+	};
+
 	const authenticated = $derived(Boolean(data.authenticated));
 
 	// ── State ──
@@ -66,6 +71,9 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let submitting = $state(false);
 	let interrupting = $state(false);
 	let source: EventSource | null = null;
+	let eventPollController: AbortController | null = null;
+	let lastEventId = 0;
+	let forceEventPolling = $state(false);
 	let liveEntryFlushFrame: number | null = null;
 	let followLiveOutputFrame: number | null = null;
 	let mainScroller = $state<HTMLElement | null>(null);
@@ -372,6 +380,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	$effect(() => {
 		if (!authenticated || typeof localStorage === 'undefined' || sidebarCollapseRestored) return;
+		if (isMobileViewport()) {
+			sidebarCollapsed = true;
+			sidebarCollapseRestored = true;
+			return;
+		}
+
 		const saved = localStorage.getItem('sidebarCollapsed');
 		if (saved === 'true' || saved === 'false') {
 			sidebarCollapsed = saved === 'true';
@@ -1291,6 +1305,64 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		});
 	}
 
+	function shouldPollEvents() {
+		if (forceEventPolling) return true;
+		if (typeof window === 'undefined') return false;
+		const host = window.location.hostname.toLowerCase();
+		return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
+	}
+
+	function abortableDelay(ms: number, signal: AbortSignal) {
+		return new Promise<void>((resolve) => {
+			if (signal.aborted) {
+				resolve();
+				return;
+			}
+
+			const timeout = window.setTimeout(resolve, ms);
+			signal.addEventListener(
+				'abort',
+				() => {
+					window.clearTimeout(timeout);
+					resolve();
+				},
+				{ once: true }
+			);
+		});
+	}
+
+	function applySequencedEvents(events: SequencedConsoleEvent[]) {
+		for (const { id, event } of events) {
+			lastEventId = Math.max(lastEventId, id);
+			handleEvent(event);
+		}
+	}
+
+	async function pollEvents(signal: AbortSignal) {
+		liveConnectionState = 'connecting';
+
+		while (!signal.aborted) {
+			try {
+				const params = new URLSearchParams({
+					transport: 'poll',
+					wait: '25000'
+				});
+				if (lastEventId > 0) params.set('since', String(lastEventId));
+				const payload = await readJson<{ events: SequencedConsoleEvent[]; latestId: number }>(
+					await fetch(`/api/events?${params.toString()}`, { cache: 'no-store', signal })
+				);
+
+				applySequencedEvents(payload.events);
+				lastEventId = Math.max(lastEventId, payload.latestId);
+				liveConnectionState = 'live';
+			} catch {
+				if (signal.aborted) return;
+				liveConnectionState = 'reconnecting';
+				await abortableDelay(2000, signal);
+			}
+		}
+	}
+
 	function handleEvent(event: ConsoleEvent) {
 		if (event.type === 'thread.started') { void loadThreads(); return; }
 		if (event.type === 'approval.requested') {
@@ -1346,12 +1418,37 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	$effect(() => {
 		source?.close();
 		source = null;
+		eventPollController?.abort();
+		eventPollController = null;
 		if (!authenticated) return;
+
+		if (shouldPollEvents()) {
+			const controller = new AbortController();
+			eventPollController = controller;
+			void pollEvents(controller.signal);
+			return () => {
+				controller.abort();
+				if (eventPollController === controller) eventPollController = null;
+			};
+		}
+
+		let errorCount = 0;
 		const next = new EventSource('/api/events');
-		liveConnectionState = source ? 'reconnecting' : 'connecting';
+		liveConnectionState = 'connecting';
 		next.onopen = () => { liveConnectionState = 'live'; };
-		next.onmessage = (raw) => { handleEvent(JSON.parse(raw.data) as ConsoleEvent); };
-		next.onerror = () => { liveConnectionState = 'reconnecting'; };
+		next.onmessage = (raw) => {
+			const id = Number(raw.lastEventId);
+			if (Number.isFinite(id) && id > 0) lastEventId = Math.max(lastEventId, id);
+			handleEvent(JSON.parse(raw.data) as ConsoleEvent);
+		};
+		next.onerror = () => {
+			liveConnectionState = 'reconnecting';
+			errorCount += 1;
+			if (errorCount >= 3) {
+				next.close();
+				forceEventPolling = true;
+			}
+		};
 		source = next;
 		return () => { next.close(); if (source === next) source = null; };
 	});

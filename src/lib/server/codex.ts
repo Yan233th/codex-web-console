@@ -74,6 +74,12 @@ type ApprovalsReviewer = 'user' | 'auto_review';
 
 const REQUEST_TIMEOUT_MS = 30_000;
 const DIAGNOSTIC_PREVIEW_LIMIT = 800;
+const EVENT_BACKLOG_LIMIT = 5_000;
+
+export type SequencedConsoleEvent = {
+	id: number;
+	event: ConsoleEvent;
+};
 
 function stripTerminalControls(value: string): string {
 	return value
@@ -582,14 +588,52 @@ class LocalCodexService {
 			timeout: ReturnType<typeof setTimeout>;
 		}
 	>();
-	private listeners = new Set<(event: ConsoleEvent) => void>();
+	private listeners = new Set<(event: ConsoleEvent, id: number) => void>();
+	private eventBacklog: SequencedConsoleEvent[] = [];
+	private eventSequence = 0;
 	private pendingApprovals = new Map<string, PendingApproval>();
 
-	subscribe(listener: (event: ConsoleEvent) => void): () => void {
+	subscribe(listener: (event: ConsoleEvent, id: number) => void): () => void {
 		this.listeners.add(listener);
 		return () => {
 			this.listeners.delete(listener);
 		};
+	}
+
+	getLatestEventId(): number {
+		return this.eventSequence;
+	}
+
+	getEventsSince(id: number): SequencedConsoleEvent[] {
+		return this.eventBacklog.filter((entry) => entry.id > id);
+	}
+
+	waitForEvents(id: number, timeoutMs: number, signal?: AbortSignal): Promise<SequencedConsoleEvent[]> {
+		const pending = this.getEventsSince(id);
+		if (pending.length > 0 || signal?.aborted) {
+			return Promise.resolve(pending);
+		}
+
+		return new Promise((resolve) => {
+			let done = false;
+			let unsubscribe = () => {};
+			let timeout: ReturnType<typeof setTimeout> | null = null;
+
+			const finish = () => {
+				if (done) return;
+				done = true;
+				unsubscribe();
+				if (timeout !== null) clearTimeout(timeout);
+				signal?.removeEventListener('abort', finish);
+				resolve(this.getEventsSince(id));
+			};
+
+			unsubscribe = this.subscribe((_event, eventId) => {
+				if (eventId > id) finish();
+			});
+			timeout = setTimeout(finish, timeoutMs);
+			signal?.addEventListener('abort', finish, { once: true });
+		});
 	}
 
 	getPendingApprovals(threadId: string): ApprovalRequest[] {
@@ -1123,8 +1167,14 @@ class LocalCodexService {
 	}
 
 	private emit(event: ConsoleEvent): void {
+		const id = ++this.eventSequence;
+		this.eventBacklog.push({ id, event });
+		if (this.eventBacklog.length > EVENT_BACKLOG_LIMIT) {
+			this.eventBacklog.splice(0, this.eventBacklog.length - EVENT_BACKLOG_LIMIT);
+		}
+
 		for (const listener of this.listeners) {
-			listener(event);
+			listener(event, id);
 		}
 	}
 
