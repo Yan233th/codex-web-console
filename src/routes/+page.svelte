@@ -66,6 +66,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let turnNavigationLockUntil = $state(0);
 	let scrollRestoreLockUntil = $state(0);
 	let followLiveOutput = $state(true);
+	let showScrollToBottom = $state(false);
 	let liveConnectionState = $state<'connecting' | 'live' | 'reconnecting'>('connecting');
 	let permissionMode = $state<PermissionMode>('default');
 	let permissionMenuOpen = $state(false);
@@ -203,6 +204,28 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			localStorage.setItem('permissionMode', mode);
 		}
 	}
+
+	function isMobileViewport() {
+		return typeof window !== 'undefined' && window.matchMedia('(max-width: 768px)').matches;
+	}
+
+	function collapseSidebarOnMobile() {
+		if (isMobileViewport()) sidebarCollapsed = true;
+	}
+
+	$effect(() => {
+		if (!authenticated || typeof window === 'undefined') return;
+
+		const query = window.matchMedia('(max-width: 768px)');
+		if (query.matches) sidebarCollapsed = true;
+
+		const handleChange = (event: MediaQueryListEvent) => {
+			if (event.matches) sidebarCollapsed = true;
+		};
+
+		query.addEventListener('change', handleChange);
+		return () => query.removeEventListener('change', handleChange);
+	});
 
 	function threadHref(threadId: string | null): string {
 		if (!threadId) return '/';
@@ -388,6 +411,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	async function openThread(threadId: string | null) {
+		collapseSidebarOnMobile();
 		if (!threadId) {
 			stashCurrentLiveEntries();
 			selectedThreadId = null;
@@ -576,6 +600,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	}
 
 	function startDraftThread() {
+		collapseSidebarOnMobile();
 		draftingThread = true;
 		followLiveOutput = true;
 		errorMessage = null;
@@ -689,6 +714,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return Math.max(0, element.scrollHeight - element.clientHeight) - element.scrollTop < 96;
 	}
 
+	function syncScrollState() {
+		const nearBottom = isNearBottom();
+		followLiveOutput = nearBottom;
+		showScrollToBottom = !nearBottom;
+	}
+
 	function jumpTurn(dir: 'previous' | 'next') {
 		const n = getHistoricalTurnElements().length;
 		if (!n) return;
@@ -789,7 +820,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const target = scrollTarget();
 		const handle = () => {
 			if (Date.now() < scrollRestoreLockUntil) return;
-			followLiveOutput = isNearBottom();
+			syncScrollState();
 			if (historicalTurns.length > 0) syncActiveTurnIndex();
 		};
 		void tick().then(() => handle());
@@ -907,6 +938,16 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	/>
 {:else}
 	<div class:sidebar-collapsed={sidebarCollapsed} class="app-shell">
+		{#if !sidebarCollapsed}
+			<button
+				type="button"
+				class="mobile-sidebar-backdrop"
+				onclick={() => { sidebarCollapsed = true; }}
+				aria-label="Close sidebar"
+				title="Close sidebar"
+			></button>
+		{/if}
+
 		<!-- Sidebar -->
 		<aside class="sidebar">
 			<div class="sidebar-header">
@@ -933,6 +974,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							<path d="M7 4v12M13 7l-3 3 3 3" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
 						</svg>
 					</button>
+					<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form">
+						<button aria-label="Log out" title="Log out">
+							<svg viewBox="0 0 20 20" aria-hidden="true">
+								<path d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+								<path d="M11 6.25 15 10l-4 3.75M15 10H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+							</svg>
+						</button>
+					</form>
 				</div>
 			</div>
 
@@ -1121,38 +1170,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		</button>
 	{/if}
 
-	{#if !browserOpen}
+	{#if !browserOpen && !showingDraftThread && showScrollToBottom}
 		<div class="screen-tools" role="group" aria-label="Page controls">
-			<button type="button" class="floating-button" aria-label="Scroll to top" title="Scroll to top" onclick={() => scrollMainTo('top')}>
+			<button type="button" class="floating-button jump-bottom" aria-label="Scroll to bottom" title="Scroll to bottom" onclick={() => scrollMainTo('bottom')}>
 				<svg viewBox="0 0 20 20" aria-hidden="true">
-					<path d="M5 8.75 10 4l5 4.75M5 13.75 10 9l5 4.75" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
+					<path d="M10 4v12M5.5 11.5 10 16l4.5-4.5" fill="none" stroke="currentColor" stroke-width="1.8" stroke-linecap="round" stroke-linejoin="round" />
 				</svg>
 			</button>
-			{#if !showingDraftThread}
-				<button type="button" class="floating-button" aria-label="Previous turn" title="Previous turn" disabled={!hasHistoricalTurns || activeTurnIndex <= 0} onclick={() => jumpTurn('previous')}>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M12.5 6 7.5 10l5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-					</svg>
-				</button>
-				<button type="button" class="floating-button" aria-label="Next turn" title="Next turn" disabled={!hasHistoricalTurns || activeTurnIndex >= historicalTurns.length - 1} onclick={() => jumpTurn('next')}>
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M7.5 6 12.5 10l-5 4" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-					</svg>
-				</button>
-			{/if}
-			<button type="button" class="floating-button" aria-label="Scroll to bottom" title="Scroll to bottom" onclick={() => scrollMainTo('bottom')}>
-				<svg viewBox="0 0 20 20" aria-hidden="true">
-					<path d="M5 6.25 10 11l5-4.75M5 11.25 10 16l5-4.75" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-				</svg>
-			</button>
-			<form method="POST" action="?/logout" use:enhance={enhanceRedirect} class="logout-form" style="margin:0;line-height:0">
-				<button class="floating-button" aria-label="Log out" title="Log out">
-					<svg viewBox="0 0 20 20" aria-hidden="true">
-						<path d="M8 3.5H5.75A2.25 2.25 0 0 0 3.5 5.75v8.5A2.25 2.25 0 0 0 5.75 16.5H8" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-						<path d="M11 6.25 15 10l-4 3.75M15 10H7.5" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" />
-					</svg>
-				</button>
-			</form>
 		</div>
 	{/if}
 

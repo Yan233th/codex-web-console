@@ -21,15 +21,23 @@
 	} = $props();
 
 	let collapsedWorkspaceKeys = $state<string[]>([]);
+	let expandedThreadListKeys = $state<string[]>([]);
 
+	const maxCollapsedThreads = 5;
 	const threadGroups = $derived.by(() => groupThreadsByWorkspace(threads));
 
 	function normalizeWorkspacePath(cwd: string): string {
-		return cwd.trim().replace(/[\\/]+$/, '') || 'Unknown workspace';
+		const trimmed = cwd.trim().replace(/[\\/]+$/, '') || 'Unknown workspace';
+		return trimmed.replace(/^([a-z]):/i, (_, drive: string) => `${drive.toUpperCase()}:`);
+	}
+
+	function isWindowsWorkspacePath(path: string): boolean {
+		return /^[a-z]:[\\/]/i.test(path) || path.startsWith('\\\\');
 	}
 
 	function workspaceKey(cwd: string): string {
-		return normalizeWorkspacePath(cwd).replace(/\\/g, '/');
+		const normalized = normalizeWorkspacePath(cwd).replace(/\\/g, '/');
+		return isWindowsWorkspacePath(cwd) ? normalized.toLowerCase() : normalized;
 	}
 
 	function workspaceName(cwd: string): string {
@@ -104,6 +112,39 @@
 			collapsedWorkspaceKeys = [...collapsedWorkspaceKeys, group.key];
 		}
 	}
+
+	function isThreadListExpanded(group: ThreadGroup): boolean {
+		return expandedThreadListKeys.includes(group.key);
+	}
+
+	function visibleGroupThreads(group: ThreadGroup): ThreadSummary[] {
+		if (group.threads.length <= maxCollapsedThreads || isThreadListExpanded(group)) {
+			return group.threads;
+		}
+
+		const visible = group.threads.slice(0, maxCollapsedThreads);
+		const selected = selectedThreadId
+			? group.threads.find((thread) => thread.id === selectedThreadId)
+			: null;
+
+		if (selected && !visible.some((thread) => thread.id === selected.id)) {
+			return [...visible, selected];
+		}
+
+		return visible;
+	}
+
+	function hiddenThreadCount(group: ThreadGroup): number {
+		return Math.max(0, group.threads.length - visibleGroupThreads(group).length);
+	}
+
+	function toggleThreadList(group: ThreadGroup) {
+		if (isThreadListExpanded(group)) {
+			expandedThreadListKeys = expandedThreadListKeys.filter((key) => key !== group.key);
+		} else {
+			expandedThreadListKeys = [...expandedThreadListKeys, group.key];
+		}
+	}
 </script>
 
 <section class="thread-list">
@@ -132,7 +173,7 @@
 					</button>
 					{#if !isGroupCollapsed(group)}
 						<div class="workspace-thread-list" id={`workspace-thread-list-${index}`}>
-							{#each group.threads as thread (thread.id)}
+							{#each visibleGroupThreads(group) as thread (thread.id)}
 								<button
 									type="button"
 									class:selected={thread.id === selectedThreadId}
@@ -150,6 +191,19 @@
 									</div>
 								</button>
 							{/each}
+							{#if group.threads.length > maxCollapsedThreads}
+								<button
+									type="button"
+									class="thread-list-toggle"
+									onclick={() => toggleThreadList(group)}
+								>
+									{#if isThreadListExpanded(group)}
+										Show fewer
+									{:else}
+										Show {hiddenThreadCount(group)} more
+									{/if}
+								</button>
+							{/if}
 						</div>
 					{/if}
 				</div>
