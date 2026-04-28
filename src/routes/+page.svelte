@@ -92,7 +92,6 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		}
 	];
 	// ── Derived ──
-	const liveEntryList = $derived(Object.values(liveEntries));
 	const selectedPermission = $derived(
 		permissionOptions.find((option) => option.mode === permissionMode) ?? permissionOptions[0]
 	);
@@ -133,6 +132,12 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	);
 	const historicalTurns = $derived(visibleSelectedThread?.turns ?? []);
 	const hasHistoricalTurns = $derived(historicalTurns.length > 0);
+	const visibleLiveEntryList = $derived.by(() =>
+		filterHistoricalLiveEntries(Object.values(liveEntries), visibleSelectedThread)
+	);
+	const visiblePreservedEntryList = $derived.by(() =>
+		filterHistoricalLiveEntries(runtimeReasoningList, visibleSelectedThread)
+	);
 	let runningTurnId = $state<string | null>(null);
 	const historicalRunningTurnId = $derived.by(() => findActiveTurnId(visibleSelectedThread));
 	const liveRunningTurnId = $derived.by(() => {
@@ -283,6 +288,34 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return null;
 	}
 
+	function settledHistoricalTurnIds(detail: ThreadDetail) {
+		return new Set(
+			detail.turns
+				.filter((turn) => !isActiveTurn(turn))
+				.map((turn) => turn.id)
+		);
+	}
+
+	function isRuntimeOnlyEntry(entry: TimelineEntry) {
+		return entry.kind === 'reasoning';
+	}
+
+	function isHistoricalLiveEntry(
+		entry: TimelineEntry,
+		historicalIds: Set<string>,
+		settledTurnIds: Set<string>
+	) {
+		if (historicalIds.has(entry.id)) return true;
+		return Boolean(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
+	}
+
+	function filterHistoricalLiveEntries(entries: TimelineEntry[], detail: ThreadDetail | null) {
+		if (!detail) return entries;
+		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
+		const settledTurnIds = settledHistoricalTurnIds(detail);
+		return entries.filter((entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds));
+	}
+
 	function reconcileRunningTurn(detail: ThreadDetail) {
 		const activeTurnId = findActiveTurnId(detail);
 		if (activeTurnId) {
@@ -326,9 +359,32 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function pruneLiveEntriesFromDetail(detail: ThreadDetail) {
 		const historicalIds = new Set(detail.turns.flatMap((turn) => turn.entries.map((entry) => entry.id)));
-		liveEntries = Object.fromEntries(
-			Object.entries(liveEntries).filter(([itemId]) => !historicalIds.has(itemId))
-		);
+		const settledTurnIds = settledHistoricalTurnIds(detail);
+		const keepEntry = ([itemId, entry]: [string, TimelineEntry]) =>
+			!historicalIds.has(itemId) &&
+			!(!isRuntimeOnlyEntry(entry) && entry.turnId && settledTurnIds.has(entry.turnId));
+
+		if (detail.thread.id === selectedThreadId) {
+			liveEntries = Object.fromEntries(Object.entries(liveEntries).filter(keepEntry));
+		}
+
+		const buffered = liveEntryBuffers[detail.thread.id];
+		if (buffered) {
+			liveEntryBuffers = {
+				...liveEntryBuffers,
+				[detail.thread.id]: Object.fromEntries(Object.entries(buffered).filter(keepEntry))
+			};
+		}
+
+		const preserved = runtimeReasoning[detail.thread.id];
+		if (preserved) {
+			runtimeReasoning = {
+				...runtimeReasoning,
+				[detail.thread.id]: preserved.filter(
+					(entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds)
+				)
+			};
+		}
 	}
 
 	async function openThread(threadId: string | null) {
@@ -825,6 +881,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	</div>
 {/snippet}
 
+{#snippet sendIcon()}
+	<svg viewBox="0 0 20 20" aria-hidden="true">
+		<path d="M10 16V4" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" />
+		<path d="M5.5 8.5 10 4l4.5 4.5" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" />
+	</svg>
+{/snippet}
+
+{#snippet stopIcon()}
+	<svg viewBox="0 0 20 20" aria-hidden="true">
+		<rect x="6.5" y="6.5" width="7" height="7" rx="1.2" fill="currentColor" />
+	</svg>
+{/snippet}
+
 <svelte:window
 	onclick={() => { permissionMenuOpen = false; }}
 	onkeydown={(event) => { if (event.key === 'Escape') permissionMenuOpen = false; }}
@@ -922,19 +991,29 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								<span class="compose-field-label">Workspace</span>
 								<input bind:value={workspacePath} spellcheck="false" />
 							</div>
-							<div>
-								<span class="compose-field-label">Message</span>
+							<div class="prompt-composer">
 								<textarea
+									class="prompt-input"
 									bind:value={newPrompt}
-									rows="6"
+									rows="4"
+									placeholder="要求后续变更"
 									onkeydown={(e) => submitOnEnter(e, () => void createThread())}
 								></textarea>
-							</div>
-							<div class="compose-actions">
-								{@render permissionPicker()}
-								<button onclick={() => void createThread()} disabled={submitting}>
-									{submitting ? 'Starting…' : 'Start thread'}
-								</button>
+								<div class="prompt-toolbar">
+									<div class="prompt-toolbar-left">
+										{@render permissionPicker()}
+									</div>
+									<button
+										class="composer-send"
+										type="button"
+										onclick={() => void createThread()}
+										disabled={submitting || !workspacePath.trim() || !newPrompt.trim()}
+										aria-label={submitting ? 'Starting thread' : 'Start thread'}
+										title={submitting ? 'Starting thread' : 'Start thread'}
+									>
+										{@render sendIcon()}
+									</button>
+								</div>
 							</div>
 						</div>
 					</div>
@@ -947,8 +1026,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						<div class="detail-body-inner">
 							<Timeline
 								turns={visibleSelectedThread?.turns ?? []}
-								liveEntries={liveEntryList}
-								preservedEntries={runtimeReasoningList}
+								liveEntries={visibleLiveEntryList}
+								preservedEntries={visiblePreservedEntryList}
 								{approvals}
 							/>
 						</div>
@@ -983,26 +1062,45 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						{#if visibleErrorMessage}
 							<p class="error">{visibleErrorMessage}</p>
 						{/if}
-						<textarea
-							bind:value={replyPrompt}
-							rows="3"
-							placeholder="Type a message…"
-							disabled={Boolean(interruptableTurnId) || interrupting}
-							onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
-						></textarea>
-						<div class="reply-actions">
-							{@render permissionPicker()}
-							<button
-								onclick={() => void sendReply()}
-								disabled={submitting || interrupting || Boolean(interruptableTurnId)}
-							>
-								{submitting ? 'Sending…' : 'Send'}
-							</button>
-							{#if interruptableTurnId}
-								<button class="danger" onclick={() => void interruptCurrentTurn()} disabled={interrupting}>
-									{interrupting ? 'Stopping…' : 'Stop'}
-								</button>
-							{/if}
+						<div class="prompt-composer">
+							<textarea
+								class="prompt-input"
+								bind:value={replyPrompt}
+								rows="3"
+								placeholder="要求后续变更"
+								disabled={Boolean(interruptableTurnId) || interrupting}
+								onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
+							></textarea>
+							<div class="prompt-toolbar">
+								<div class="prompt-toolbar-left">
+									{@render permissionPicker()}
+								</div>
+								<div class="prompt-toolbar-right">
+									{#if interruptableTurnId}
+										<button
+											class="composer-send composer-stop"
+											type="button"
+											onclick={() => void interruptCurrentTurn()}
+											disabled={interrupting}
+											aria-label={interrupting ? 'Stopping current turn' : 'Stop current turn'}
+											title={interrupting ? 'Stopping current turn' : 'Stop current turn'}
+										>
+											{@render stopIcon()}
+										</button>
+									{:else}
+										<button
+											class="composer-send"
+											type="button"
+											onclick={() => void sendReply()}
+											disabled={submitting || interrupting || !replyPrompt.trim()}
+											aria-label={submitting ? 'Sending message' : 'Send message'}
+											title={submitting ? 'Sending message' : 'Send message'}
+										>
+											{@render sendIcon()}
+										</button>
+									{/if}
+								</div>
+							</div>
 						</div>
 					</div>
 				{/if}
