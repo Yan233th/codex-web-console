@@ -1,3 +1,11 @@
+## [1.0.1](https://github.com/lycohana/codex-web-console/compare/v1.0.0...v1.0.1) (2026-04-29)
+
+### Bug Fixes
+
+* ci/cd ([bd19d3d](https://github.com/lycohana/codex-web-console/commit/bd19d3da95f52702dcbd2eccdc1a23e845697272))
+* ci/cd ([1bbd77e](https://github.com/lycohana/codex-web-console/commit/1bbd77e17d6e473dd75f39bd51cb3dce4b324eb0))
+* ci/cd ([3c0684f](https://github.com/lycohana/codex-web-console/commit/3c0684f287622e5f6bb0e969b3c84155eff2287c))
+
 ## 1.0.0 (2026-04-29)
 
 ### Features
