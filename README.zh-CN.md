@@ -88,7 +88,13 @@ CD 通过 `semantic-release` 在 `main` 分支自动发布 npm 并创建 GitHub 
 - `perf:` 和 `refactor:` -> 补丁发布
 - `feat!:` / `fix!:` / `BREAKING CHANGE:` -> 主版本发布
 
-启用自动发布前，需要在 GitHub Actions Secrets 中配置：
+推送到 `main` 的自动发布默认走 npm Trusted Publishing（OIDC）。
+手动执行 `workflow_dispatch` 时，可以选择：
+
+- `oidc`：通过 npm Trusted Publishing 发布
+- `npm-token`：通过 GitHub Secret 中的 `NPM_TOKEN` 兜底发布
+
+如果要启用手动 token 发布，需要在 GitHub Actions Secrets 中配置：
 
 ```text
 NPM_TOKEN

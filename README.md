@@ -89,7 +89,13 @@ Versioning follows Conventional Commits:
 - `perf:` and `refactor:` -> patch release
 - `feat!:` / `fix!:` / `BREAKING CHANGE:` -> major release
 
-Before enabling the release workflow, add this GitHub Actions secret:
+Automatic releases on `main` use npm trusted publishing (OIDC) when configured on npm.
+For manual `workflow_dispatch` runs, you can choose:
+
+- `oidc`: publish via npm trusted publishing
+- `npm-token`: publish via the `NPM_TOKEN` GitHub secret as a fallback
+
+Before enabling manual token-based publishing, add this GitHub Actions secret:
 
 ```text
 NPM_TOKEN
