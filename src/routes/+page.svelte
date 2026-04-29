@@ -72,6 +72,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let workspacePath = $state('');
 	let newPrompt = $state('');
 	let replyPrompt = $state('');
+	let pendingImages = $state<string[]>([]);
+	let replyImages = $state<string[]>([]);
+	let newImageInput = $state<HTMLInputElement | null>(null);
+	let replyImageInput = $state<HTMLInputElement | null>(null);
 	let providerFilter = $state('all');
 	let sidebarCollapsed = $state(false);
 	let sidebarCollapseRestored = $state(false);
@@ -304,6 +308,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const selectedSummary = $derived(
 		visibleThreads.find((t) => t.id === visibleSelectedThreadId) ?? null
 	);
+	const pageTitle = $derived.by(() => {
+		const currentSessionName =
+			selectedSummary?.title ??
+			visibleSelectedThread?.thread.title ??
+			(showingDraftThread ? 'New thread' : 'Web Console');
+		return `codex - ${currentSessionName}`;
+	});
 	const historicalTurns = $derived.by(() =>
 		(visibleSelectedThread?.turns ?? []).map((turn) =>
 			isActiveTurn(turn) ? turn : { ...turn, entries: turn.entries.filter((entry) => entry.kind !== 'reasoning') }
@@ -314,6 +325,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		filterHistoricalLiveEntries(Object.values(liveEntries), visibleSelectedThread).filter(hasRenderableLiveEntry)
 	);
 	let runningTurnId = $state<string | null>(null);
+	let errorClearedAt = $state(0);
 	const historicalRunningTurnId = $derived.by(() => findActiveTurnId(visibleSelectedThread));
 	const liveRunningTurnId = $derived.by(() => {
 		if (!runningTurnId) return null;
@@ -729,6 +741,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		approvals = [];
 		draftingThread = true;
 		replyPrompt = '';
+		replyImages = [];
 		if (message) errorMessage = message;
 	}
 
@@ -898,14 +911,34 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return !isRuntimeOnlyEntry(entry) || hasRuntimeReasoningContent(entry);
 	}
 
+	function normalizedEntryContent(entry: TimelineEntry) {
+		return `${entry.text ?? ''}\u0000${entry.output ?? ''}`.trim();
+	}
+
+	function hasEquivalentHistoricalEntry(entry: TimelineEntry, detail: ThreadDetail) {
+		if (!entry.turnId) return false;
+		const turn = detail.turns.find((item) => item.id === entry.turnId);
+		if (!turn) return false;
+		const liveContent = normalizedEntryContent(entry);
+		if (!liveContent) return false;
+		return turn.entries.some(
+			(historical) =>
+				historical.kind === entry.kind &&
+				historical.phase === entry.phase &&
+				normalizedEntryContent(historical) === liveContent
+		);
+	}
+
 	function isHistoricalLiveEntry(
 		entry: TimelineEntry,
 		historicalIds: Set<string>,
 		settledTurnIds: Set<string>,
-		historicalUserTexts: Set<string>
+		historicalUserTexts: Set<string>,
+		detail: ThreadDetail
 	) {
 		if (historicalIds.has(entry.id)) return true;
 		if (entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) return true;
+		if (hasEquivalentHistoricalEntry(entry, detail)) return true;
 		return Boolean(entry.turnId && settledTurnIds.has(entry.turnId));
 	}
 
@@ -919,10 +952,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				.filter((entry) => entry.kind === 'user' && entry.text?.trim())
 				.map((entry) => entry.text?.trim() ?? '')
 		);
-		return entries.filter((entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds, historicalUserTexts));
+		return entries.filter((entry) => !isHistoricalLiveEntry(entry, historicalIds, settledTurnIds, historicalUserTexts, detail));
 	}
 
 	function reconcileRunningTurn(detail: ThreadDetail) {
+		// Don't re-arm while the error cooldown is active
+		if (errorClearedAt && Date.now() - errorClearedAt < 10_000) return;
+
 		const activeTurnId = findActiveTurnId(detail);
 		if (activeTurnId) {
 			runningTurnId = runningTurnId ?? activeTurnId;
@@ -975,6 +1011,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const keepEntry = ([itemId, entry]: [string, TimelineEntry]) =>
 			!historicalIds.has(itemId) &&
 			!(entry.kind === 'user' && entry.text && historicalUserTexts.has(entry.text.trim())) &&
+			!hasEquivalentHistoricalEntry(entry, detail) &&
 			!(entry.turnId && settledTurnIds.has(entry.turnId)) &&
 			hasRenderableLiveEntry(entry);
 
@@ -1183,17 +1220,35 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		bootErrorMessage = data.codexError ? String(data.codexError) : null;
 	});
 
+	let loadThreadsInFlight = false;
+	let loadThreadsQueued = false;
+
 	async function loadThreads() {
-		const payload = await readJson<ThreadListResponse>(
-			await fetch('/api/threads', { cache: 'no-store' })
-		);
-		bootErrorMessage = null;
-		const localSelection =
-			selectedThread?.thread ?? threads.find((thread) => thread.id === selectedThreadId);
-		const nextThreads = mergeThreadSummaries(payload.threads, localSelection);
-		threadListSignature = payload.signature;
-		if (!sameThreadList(threads, nextThreads)) {
-			threads = nextThreads;
+		if (loadThreadsInFlight) {
+			loadThreadsQueued = true;
+			return;
+		}
+		loadThreadsInFlight = true;
+		try {
+			const payload = await readJson<ThreadListResponse>(
+				await fetch('/api/threads', { cache: 'no-store' })
+			);
+			bootErrorMessage = null;
+			const localSelection =
+				selectedThread?.thread ?? threads.find((thread) => thread.id === selectedThreadId);
+			const nextThreads = mergeThreadSummaries(payload.threads, localSelection);
+			threadListSignature = payload.signature;
+			if (!sameThreadList(threads, nextThreads)) {
+				threads = nextThreads;
+			}
+		} catch {
+			// Swallow — will retry on next trigger.
+		} finally {
+			loadThreadsInFlight = false;
+			if (loadThreadsQueued) {
+				loadThreadsQueued = false;
+				void loadThreads();
+			}
 		}
 	}
 
@@ -1254,11 +1309,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		submitting = true;
 		errorMessage = null;
 		const prompt = newPrompt.trim();
+		const images = [...pendingImages];
 		try {
 			followLiveOutput = true;
-			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode, modelSelection: modelSelectionPayload() }) }));
+			const payload = await readJson<{ thread: ThreadSummary }>(await fetch('/api/threads', { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: workspacePath, prompt, permissionMode, modelSelection: modelSelectionPayload(), images: images.length > 0 ? images : undefined }) }));
 			bootErrorMessage = null;
 			newPrompt = '';
+			pendingImages = [];
 			draftingThread = false;
 			const optimisticTurn = createOptimisticTurn(prompt);
 			threads = [payload.thread, ...threads.filter((thread) => thread.id !== payload.thread.id)];
@@ -1288,17 +1345,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (interruptableTurnId) { errorMessage = 'This turn is still running. Stop it before sending another reply.'; return; }
 		const thread = selectedThread;
 		const prompt = replyPrompt.trim();
+		const images = [...replyImages];
 		submitting = true;
 		followLiveOutput = true;
 		errorMessage = null;
 		replyPrompt = '';
+		replyImages = [];
 		const optimisticTurnId = appendOptimisticTurn(prompt);
 		await tick();
 		scrollMainTo('bottom', 'auto');
 		try {
-			await readJson<{ ok: true }>(await fetch(`/api/threads/${thread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: thread.thread.cwd, prompt, permissionMode, modelSelection: modelSelectionPayload() }) }));
+			await readJson<{ ok: true }>(await fetch(`/api/threads/${thread.thread.id}/messages`, { method: 'POST', headers: { 'Content-Type': 'application/json' }, body: JSON.stringify({ cwd: thread.thread.cwd, prompt, permissionMode, modelSelection: modelSelectionPayload(), images: images.length > 0 ? images : undefined }) }));
 			bootErrorMessage = null;
-		} catch (error) { removeOptimisticTurn(optimisticTurnId); replyPrompt = prompt; errorMessage = error instanceof Error ? error.message : String(error); }
+		} catch (error) { removeOptimisticTurn(optimisticTurnId); replyPrompt = prompt; replyImages = images; errorMessage = error instanceof Error ? error.message : String(error); }
 		finally { submitting = false; }
 	}
 
@@ -1325,6 +1384,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		approvals = [];
 		newPrompt = '';
 		replyPrompt = '';
+		pendingImages = [];
+		replyImages = [];
 		workspacePath = visibleSelectedThread?.thread.cwd ?? String(data.homePath);
 		void openThread(null);
 	}
@@ -1338,6 +1399,53 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (event.key !== 'Enter' || event.isComposing || event.shiftKey || event.ctrlKey) return;
 		event.preventDefault();
 		submit();
+	}
+
+	function addImages(files: FileList | File[], target: 'new' | 'reply') {
+		const list = target === 'new' ? pendingImages : replyImages;
+		for (const file of files) {
+			if (!file.type.startsWith('image/')) continue;
+			const reader = new FileReader();
+			reader.onload = () => {
+				const result = reader.result;
+				if (typeof result === 'string') {
+					if (target === 'new') pendingImages = [...pendingImages, result];
+					else replyImages = [...replyImages, result];
+				}
+			};
+			reader.readAsDataURL(file);
+		}
+	}
+
+	function removeImage(index: number, target: 'new' | 'reply') {
+		if (target === 'new') pendingImages = pendingImages.filter((_, i) => i !== index);
+		else replyImages = replyImages.filter((_, i) => i !== index);
+	}
+
+	function handleImagePaste(event: ClipboardEvent, target: 'new' | 'reply') {
+		const items = event.clipboardData?.items;
+		if (!items) return;
+		const files: File[] = [];
+		for (const item of items) {
+			if (item.type.startsWith('image/')) {
+				const file = item.getAsFile();
+				if (file) files.push(file);
+			}
+		}
+		if (files.length > 0) {
+			event.preventDefault();
+			addImages(files, target);
+		}
+	}
+
+	function handleImageDrop(event: DragEvent, target: 'new' | 'reply') {
+		const files = event.dataTransfer?.files;
+		if (!files) return;
+		const imageFiles = [...files].filter((f) => f.type.startsWith('image/'));
+		if (imageFiles.length > 0) {
+			event.preventDefault();
+			addImages(imageFiles, target);
+		}
 	}
 
 	function scrollTarget(): HTMLElement | Window {
@@ -1538,6 +1646,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			if (event.threadId === selectedThreadId) {
 				replaceOptimisticTurnId(event.turnId);
 				runningTurnId = event.turnId;
+				errorClearedAt = 0;
 			}
 			return;
 		}
@@ -1568,7 +1677,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (event.type === 'reasoning.delta') { appendLiveEntryField(event.itemId, event.threadId, 'text', event.delta, { turnId: event.turnId }, { kind: 'reasoning', label: 'Reasoning' }); maybeFollowLiveOutput(event.threadId); return; }
 		if (event.type === 'command.delta') { appendLiveEntryField(event.itemId, event.threadId, 'output', event.delta, { ...event.item, turnId: event.turnId }, { kind: 'command', label: 'Command' }); maybeFollowLiveOutput(event.threadId); return; }
 		if (event.type === 'file_change.delta') { appendLiveEntryField(event.itemId, event.threadId, 'text', event.delta, { turnId: event.turnId }, { kind: 'file_change', label: 'File change' }); maybeFollowLiveOutput(event.threadId); return; }
-		if (event.type === 'error') errorMessage = event.message;
+		if (event.type === 'error') {
+			errorMessage = event.message;
+			// Force-clear stuck turn state so the user can continue sending messages
+			if (runningTurnId) {
+				runningTurnId = null;
+				errorClearedAt = Date.now();
+				// Delay thread reload so reconcileRunningTurn doesn't immediately re-arm the lock
+				const tid = selectedThreadId;
+				if (tid) setTimeout(() => void loadThread(tid, { silent: true }), 3000);
+			}
+		}
 	}
 
 	// ── Effects ──
@@ -1618,6 +1737,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		if (!authenticated || typeof window === 'undefined') return;
 		let cancelled = false;
 		let probeInFlight = false;
+		const hasActiveTurn = runningTurnId !== null || Object.keys(liveEntries).length > 0;
 
 		const probeThreadList = async () => {
 			if (probeInFlight) return;
@@ -1636,10 +1756,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			}
 		};
 
+		// Increase interval during active turns (SSE stream handles live updates)
+		const interval = hasActiveTurn ? THREAD_LIST_PROBE_INTERVAL_MS * 4 : THREAD_LIST_PROBE_INTERVAL_MS;
+
 		const timer = window.setInterval(() => {
 			if (document.hidden) return;
 			void probeThreadList();
-		}, THREAD_LIST_PROBE_INTERVAL_MS);
+		}, interval);
 
 		return () => {
 			cancelled = true;
@@ -1923,6 +2046,18 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	</svg>
 {/snippet}
 
+{#snippet imageIcon()}
+	<svg viewBox="0 0 20 20" aria-hidden="true">
+		<rect x="2" y="3" width="16" height="14" rx="2" fill="none" stroke="currentColor" stroke-width="1.5" />
+		<circle cx="7" cy="8" r="1.5" fill="currentColor" />
+		<path d="M2 14l4-4 3 3 2-2 7 7" fill="none" stroke="currentColor" stroke-width="1.5" stroke-linejoin="round" />
+	</svg>
+{/snippet}
+
+<svelte:head>
+	<title>{pageTitle}</title>
+</svelte:head>
+
 <svelte:window
 	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
 	onkeydown={(event) => {
@@ -2079,23 +2214,52 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								</label>
 							</section>
 							<div class="prompt-composer">
+								{#if pendingImages.length > 0}
+									<div class="image-preview-strip">
+										{#each pendingImages as img, i}
+											<div class="image-preview-item">
+												<img src={img} alt="附件 {i + 1}" />
+												<button type="button" class="image-preview-remove" onclick={() => removeImage(i, 'new')} aria-label="移除图片">×</button>
+											</div>
+										{/each}
+									</div>
+								{/if}
 								<textarea
 									class="prompt-input"
 									bind:value={newPrompt}
 									rows="4"
-									placeholder="要求后续变更"
+									placeholder="要求后续变更（可粘贴或拖入图片）"
 									onkeydown={(e) => submitOnEnter(e, () => void createThread())}
+									onpaste={(e) => handleImagePaste(e, 'new')}
+									ondrop={(e) => handleImageDrop(e, 'new')}
+									ondragover={(e) => { e.preventDefault(); }}
 								></textarea>
 								<div class="prompt-toolbar">
 									<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
 										{@render modelPicker()}
 										{@render permissionPicker()}
+										<button
+											type="button"
+											class="toolbar-btn"
+											onclick={() => newImageInput?.click()}
+											title="添加图片"
+										>
+											{@render imageIcon()}
+										</button>
+										<input
+											type="file"
+											accept="image/*"
+											multiple
+											bind:this={newImageInput}
+											onchange={(e) => { if (newImageInput?.files) addImages(newImageInput.files, 'new'); newImageInput && (newImageInput.value = ''); }}
+											hidden
+										/>
 									</div>
 									<button
 										class="composer-send"
 										type="button"
 										onclick={() => void createThread()}
-										disabled={submitting || !workspacePath.trim() || !newPrompt.trim()}
+										disabled={submitting || !workspacePath.trim() || (!newPrompt.trim() && pendingImages.length === 0)}
 										aria-label={submitting ? 'Starting thread' : 'Start thread'}
 										title={submitting ? 'Starting thread' : 'Start thread'}
 									>
@@ -2116,6 +2280,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								turns={historicalTurns}
 								liveEntries={visibleLiveEntryList}
 								{approvals}
+								cwd={visibleSelectedThread?.thread.cwd ?? ''}
 								omittedTurnCount={visibleSelectedThread?.omittedTurnCount ?? 0}
 								onResolveApproval={(requestId, decision) =>
 									void resolveApproval(requestId, decision)}
@@ -2137,18 +2302,48 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							<p class="error">{visibleErrorMessage}</p>
 						{/if}
 						<div class="prompt-composer">
+							{#if replyImages.length > 0}
+								<div class="image-preview-strip">
+									{#each replyImages as img, i}
+										<div class="image-preview-item">
+											<img src={img} alt="附件 {i + 1}" />
+											<button type="button" class="image-preview-remove" onclick={() => removeImage(i, 'reply')} aria-label="移除图片">×</button>
+										</div>
+									{/each}
+								</div>
+							{/if}
 							<textarea
 								class="prompt-input"
 								bind:value={replyPrompt}
 								rows="3"
-								placeholder="要求后续变更"
+								placeholder="要求后续变更（可粘贴或拖入图片）"
 								disabled={Boolean(interruptableTurnId) || interrupting}
 								onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
+								onpaste={(e) => handleImagePaste(e, 'reply')}
+								ondrop={(e) => handleImageDrop(e, 'reply')}
+								ondragover={(e) => { e.preventDefault(); }}
 							></textarea>
 							<div class="prompt-toolbar">
 								<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
 									{@render modelPicker()}
 									{@render permissionPicker()}
+									<button
+										type="button"
+										class="toolbar-btn"
+										onclick={() => replyImageInput?.click()}
+										title="添加图片"
+										disabled={Boolean(interruptableTurnId) || interrupting}
+									>
+										{@render imageIcon()}
+									</button>
+									<input
+										type="file"
+										accept="image/*"
+										multiple
+										bind:this={replyImageInput}
+										onchange={(e) => { if (replyImageInput?.files) addImages(replyImageInput.files, 'reply'); replyImageInput && (replyImageInput.value = ''); }}
+										hidden
+									/>
 								</div>
 								<div class="prompt-toolbar-right">
 									{#if interruptableTurnId}
@@ -2167,7 +2362,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 											class="composer-send"
 											type="button"
 											onclick={() => void sendReply()}
-											disabled={submitting || interrupting || !replyPrompt.trim()}
+											disabled={submitting || interrupting || (!replyPrompt.trim() && replyImages.length === 0)}
 											aria-label={submitting ? 'Sending message' : 'Send message'}
 											title={submitting ? 'Sending message' : 'Send message'}
 										>
@@ -2227,7 +2422,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			}}
 		>
 			<div
-				class="thread-manager-popover"
+				class={`thread-manager-popover is-${threadManagerDialog.mode}`}
 				style={`left:${threadManagerDialog.x}px;top:${threadManagerDialog.y}px;`}
 				role="dialog"
 				tabindex="-1"

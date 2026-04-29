@@ -50,6 +50,7 @@ export const POST = async ({ locals, params, request }) => {
 		prompt?: string;
 		permissionMode?: unknown;
 		modelSelection?: unknown;
+		images?: unknown;
 	};
 
 	try {
@@ -58,6 +59,7 @@ export const POST = async ({ locals, params, request }) => {
 			prompt?: string;
 			permissionMode?: unknown;
 			modelSelection?: unknown;
+			images?: unknown;
 		};
 	} catch {
 		return json({ error: 'Request body must be valid JSON.' }, { status: 400 });
@@ -67,13 +69,16 @@ export const POST = async ({ locals, params, request }) => {
 	const prompt = String(body.prompt ?? '').trim();
 	const permissionMode = parsePermissionMode(body.permissionMode);
 	const modelSelection = parseModelSelection(body.modelSelection);
+	const images = Array.isArray(body.images)
+		? body.images.filter((img): img is string => typeof img === 'string' && img.length > 0)
+		: undefined;
 
 	if (!cwd || !prompt) {
 		return json({ error: 'Workspace path and prompt are required.' }, { status: 400 });
 	}
 
 	try {
-		await codex.sendMessage(params.threadId, cwd, prompt, permissionMode, modelSelection);
+		await codex.sendMessage(params.threadId, cwd, prompt, permissionMode, modelSelection, images);
 		return json({ ok: true });
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);

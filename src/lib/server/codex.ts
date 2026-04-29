@@ -52,6 +52,12 @@ type ThreadRecord = {
 	turns: Array<{
 		id: string;
 		status: string;
+		error?: unknown;
+		errorMessage?: unknown;
+		failure?: unknown;
+		failureReason?: unknown;
+		lastError?: unknown;
+		message?: unknown;
 		startedAt: number | null;
 		completedAt: number | null;
 		durationMs: number | null;
@@ -132,12 +138,46 @@ function readJsonText(value: unknown): string | null {
 	}
 }
 
+function readErrorText(value: unknown): string | null {
+	const text = readString(value);
+	if (text !== null) return text;
+
+	const record = asRecord(value);
+	if (record) {
+		return (
+			readString(record.message) ??
+			readString(record.error) ??
+			readString(record.reason) ??
+			readString(record.detail) ??
+			readJsonText(record)
+		);
+	}
+
+	return readJsonText(value);
+}
+
 function readNumber(value: unknown): number | null {
 	return typeof value === 'number' && Number.isFinite(value) ? value : null;
 }
 
 function readStringArray(value: unknown): string[] {
 	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function pushUniqueImage(images: string[], image: string | null): void {
+	if (!image || images.includes(image)) return;
+	images.push(image);
+}
+
+function dataImageFromBase64(value: string, mediaType = 'image/png'): string | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	if (trimmed.startsWith('data:image/')) return trimmed;
+	if (/^https?:\/\//i.test(trimmed)) return trimmed;
+	if (/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length > 80) {
+		return `data:${mediaType};base64,${trimmed}`;
+	}
+	return null;
 }
 
 function normalizeThreadStatus(status: ThreadStatus): string {
@@ -189,6 +229,10 @@ function normalizeToolCall(item: ThreadItem): TimelineEntry {
 		readString(server?.name) ??
 		readString(item.server);
 
+	// Extract images from tool result content blocks
+	const resultContent = asRecord(item.result)?.content ?? item.result;
+	const images = Array.isArray(resultContent) ? readImageUrls(resultContent) : readImageUrlsDeep({ result: resultContent });
+
 	return {
 		id: item.id,
 		kind: 'tool_call',
@@ -200,7 +244,8 @@ function normalizeToolCall(item: ThreadItem): TimelineEntry {
 		status: readString(item.status),
 		startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
 		completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
-		durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms)
+		durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms),
+		...(images.length > 0 ? { images } : {})
 	};
 }
 
@@ -335,29 +380,122 @@ function modelRuntime(selection: ModelSelection | null | undefined): {
 	};
 }
 
+function readImageUrls(contentParts: unknown[]): string[] {
+	const images: string[] = [];
+	for (const part of contentParts) {
+		const entry = asRecord(part);
+		if (!entry) continue;
+
+		// OpenAI-style: { type: "image_url", image_url: { url: "data:..." } }
+		if (entry.type === 'image_url') {
+			const imageObj = asRecord(entry.image_url);
+			const url = readString(imageObj?.url);
+			if (url) images.push(url);
+			continue;
+		}
+
+		// Anthropic-style: { type: "image", source: { type: "base64", media_type: "...", data: "..." } }
+		// or flat style: { type: "image", media_type: "...", data: "..." }
+		// or url style: { type: "image", url: "..." }
+		if (entry.type === 'image') {
+			const url = readString(entry.url);
+			if (url) { images.push(url); continue; }
+
+			const source = asRecord(entry.source);
+			if (source) {
+				if (source.type === 'base64') {
+					const mediaType = readString(source.media_type) ?? 'image/png';
+					const data = readString(source.data);
+					if (data) { images.push(`data:${mediaType};base64,${data}`); continue; }
+				}
+				const sourceUrl = readString(source.url);
+				if (sourceUrl) { images.push(sourceUrl); continue; }
+			}
+
+			if (typeof entry.data === 'string' && entry.data) {
+				const mediaType = readString(entry.media_type) ?? 'image/png';
+				images.push(`data:${mediaType};base64,${entry.data}`);
+			}
+		}
+	}
+	return images;
+}
+
+function readImageUrlsDeep(value: unknown): string[] {
+	const images: string[] = [];
+
+	function visit(current: unknown, key = ''): void {
+		if (Array.isArray(current)) {
+			for (const part of current) visit(part, key);
+			return;
+		}
+
+		const record = asRecord(current);
+		if (!record) {
+			if (typeof current === 'string') {
+				const image = dataImageFromBase64(current);
+				if (image && ['result', 'b64_json', 'image', 'data'].includes(key)) {
+					pushUniqueImage(images, image);
+				}
+			}
+			return;
+		}
+
+		for (const image of readImageUrls([record])) {
+			pushUniqueImage(images, image);
+		}
+
+		const mediaType = readString(record.media_type) ?? readString(record.mime_type) ?? 'image/png';
+		const imageUrl = asRecord(record.image_url);
+		pushUniqueImage(images, readString(imageUrl?.url));
+
+		for (const keyName of ['result', 'b64_json', 'image', 'data']) {
+			const direct = record[keyName];
+			if (typeof direct === 'string') {
+				pushUniqueImage(images, dataImageFromBase64(direct, mediaType));
+			}
+		}
+
+		for (const [childKey, child] of Object.entries(record)) {
+			if (childKey === 'url' || childKey === 'image_url') continue;
+			visit(child, childKey);
+		}
+	}
+
+	visit(value);
+	return images;
+}
+
 function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 	switch (item.type) {
-		case 'userMessage':
+		case 'userMessage': {
+			const contentParts = Array.isArray(item.content) ? item.content : [];
+			const images = readImageUrls(contentParts);
 			return {
 				id: item.id,
 				kind: 'user',
 				label: 'You',
-				text: (Array.isArray(item.content) ? item.content : [])
+				text: contentParts
 					.map((part) => {
 						const entry = asRecord(part);
 						return entry && entry.type === 'text' && typeof entry.text === 'string' ? entry.text : '';
 					})
 					.filter((value): value is string => Boolean(value))
-					.join('\n')
+					.join('\n'),
+				...(images.length > 0 ? { images } : {})
 			};
-		case 'agentMessage':
+		}
+		case 'agentMessage': {
+			const assistantImages = Array.isArray(item.content) ? readImageUrls(item.content) : [];
 			return {
 				id: item.id,
 				kind: 'assistant',
 				label: item.phase === 'commentary' ? 'Assistant commentary' : 'Assistant',
 				text: readString(item.text) ?? '',
-				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null
+				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null,
+				...(assistantImages.length > 0 ? { images: assistantImages } : {})
 			};
+		}
 		case 'reasoning': {
 			const reasoningText = [
 				...(Array.isArray(item.summary)
@@ -404,6 +542,25 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 		case 'function_call':
 		case 'functionCall':
 			return normalizeToolCall(item);
+		case 'imageGeneration':
+		case 'image_generation':
+		case 'image-generation':
+		case 'imageGenerationCall':
+		case 'image_generation_call':
+		case 'image-generation-call': {
+			const images = readImageUrlsDeep(item);
+			return {
+				id: item.id,
+				kind: 'assistant',
+				label: 'Image generation',
+				text: readString(item.text) ?? readString(item.prompt) ?? '',
+				status: readString(item.status),
+				startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+				completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+				durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms),
+				...(images.length > 0 ? { images } : {})
+			};
+		}
 		case 'commandExecution':
 			return {
 				id: item.id,
@@ -476,6 +633,13 @@ function normalizeThreadDetail(
 	const turns: TimelineTurn[] = sourceTurns.map((turn) => ({
 		id: turn.id,
 		status: turn.status,
+		errorMessage:
+			readErrorText(turn.error) ??
+			readErrorText(turn.errorMessage) ??
+			readErrorText(turn.failureReason) ??
+			readErrorText(turn.failure) ??
+			readErrorText(turn.lastError) ??
+			readErrorText(turn.message),
 		startedAt: turn.startedAt,
 		completedAt: turn.completedAt,
 		durationMs: turn.durationMs,
@@ -585,6 +749,14 @@ function serializeApproval(
 	};
 }
 
+function buildImageInput(images?: string[]): Array<Record<string, unknown>> {
+	if (!images || images.length === 0) return [];
+	return images.map((dataUri) => ({
+		type: 'image',
+		url: dataUri
+	}));
+}
+
 class LocalCodexService {
 	private process: ChildProcessWithoutNullStreams | null = null;
 	private buffer = '';
@@ -602,6 +774,8 @@ class LocalCodexService {
 	private eventBacklog: SequencedConsoleEvent[] = [];
 	private eventSequence = 0;
 	private pendingApprovals = new Map<string, PendingApproval>();
+	private listThreadsInFlight: Promise<ThreadSummary[]> | null = null;
+	private readThreadInFlight = new Map<string, Promise<ThreadDetail>>();
 
 	subscribe(listener: (event: ConsoleEvent, id: number) => void): () => void {
 		this.listeners.add(listener);
@@ -653,16 +827,25 @@ class LocalCodexService {
 	}
 
 	async listThreads(): Promise<ThreadSummary[]> {
-		await this.ensureStarted();
-		const response = (await this.request('thread/list', {
-			limit: 50,
-			archived: false,
-			modelProviders: [],
-			sortKey: 'updated_at',
-			sortDirection: 'desc'
-		})) as { data: ThreadRecord[] };
+		if (this.listThreadsInFlight) {
+			return this.listThreadsInFlight;
+		}
 
-		return response.data.map(normalizeThreadSummary);
+		const promise = (async () => {
+			await this.ensureStarted();
+			const response = (await this.request('thread/list', {
+				limit: 50,
+				archived: false,
+				modelProviders: [],
+				sortKey: 'updated_at',
+				sortDirection: 'desc'
+			})) as { data: ThreadRecord[] };
+			return response.data.map(normalizeThreadSummary);
+		})();
+
+		this.listThreadsInFlight = promise;
+		promise.catch(() => {}).finally(() => { this.listThreadsInFlight = null; });
+		return promise;
 	}
 
 	async listModels(): Promise<ModelOption[]> {
@@ -678,6 +861,19 @@ class LocalCodexService {
 	}
 
 	async readThread(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
+		const coalescingKey = `${threadId}:${options.tailTurns ?? 'full'}`;
+		const inFlight = this.readThreadInFlight.get(coalescingKey);
+		if (inFlight) {
+			return inFlight;
+		}
+
+		const promise = this._readThreadInternal(threadId, options);
+		this.readThreadInFlight.set(coalescingKey, promise);
+		promise.catch(() => {}).finally(() => { this.readThreadInFlight.delete(coalescingKey); });
+		return promise;
+	}
+
+	private async _readThreadInternal(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
 		await this.ensureStarted();
 		let response: { thread: ThreadRecord } | null = null;
 		let lastError: unknown = null;
@@ -727,9 +923,11 @@ class LocalCodexService {
 		cwd: string,
 		prompt: string,
 		permissionMode?: PermissionMode,
-		modelSelection?: ModelSelection
+		modelSelection?: ModelSelection,
+		images?: string[]
 	): Promise<ThreadSummary> {
 		await this.ensureStarted();
+
 		const permissions = permissionRuntime(cwd, permissionMode);
 		const model = modelRuntime(modelSelection);
 
@@ -744,15 +942,18 @@ class LocalCodexService {
 			persistExtendedHistory: true
 		})) as { thread: ThreadRecord };
 
+		const input: Array<Record<string, unknown>> = [
+			...buildImageInput(images),
+			{
+				type: 'text',
+				text: prompt,
+				text_elements: []
+			}
+		];
+
 		this.enqueueRequest('turn/start', {
 			threadId: response.thread.id,
-			input: [
-				{
-					type: 'text',
-					text: prompt,
-					text_elements: []
-				}
-			],
+			input,
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandboxPolicy: permissions.sandboxPolicy,
@@ -767,11 +968,32 @@ class LocalCodexService {
 		cwd: string,
 		prompt: string,
 		permissionMode?: PermissionMode,
-		modelSelection?: ModelSelection
+		modelSelection?: ModelSelection,
+		images?: string[]
 	): Promise<void> {
 		await this.ensureStarted();
+
 		const permissions = permissionRuntime(cwd, permissionMode);
 		const model = modelRuntime(modelSelection);
+
+		const input: Array<Record<string, unknown>> = [
+			...buildImageInput(images),
+			{
+				type: 'text',
+				text: prompt,
+				text_elements: []
+			}
+		];
+
+		const turnStartParams = {
+			threadId,
+			input,
+			cwd,
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandboxPolicy: permissions.sandboxPolicy,
+			...model
+		};
 
 		void this.request('thread/resume', {
 			threadId,
@@ -783,23 +1005,7 @@ class LocalCodexService {
 			sandbox: permissions.sandbox,
 			persistExtendedHistory: true
 		})
-			.then(() =>
-				this.request('turn/start', {
-					threadId,
-					input: [
-						{
-							type: 'text',
-							text: prompt,
-							text_elements: []
-						}
-					],
-					cwd,
-					approvalPolicy: permissions.approvalPolicy,
-					approvalsReviewer: permissions.approvalsReviewer,
-					sandboxPolicy: permissions.sandboxPolicy,
-					...model
-				})
-			)
+			.then(() => this.request('turn/start', turnStartParams))
 			.catch((error) => {
 				const message = error instanceof Error ? error.message : String(error);
 				this.emit({ type: 'error', message: `Failed to send message: ${message}` });

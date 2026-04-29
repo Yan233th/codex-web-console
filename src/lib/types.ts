@@ -70,11 +70,13 @@ export interface TimelineEntry {
 		kind: string;
 		diff: string;
 	}>;
+	images?: string[];
 }
 
 export interface TimelineTurn {
 	id: string;
 	status: string;
+	errorMessage?: string | null;
 	startedAt: number | null;
 	completedAt: number | null;
 	durationMs: number | null;

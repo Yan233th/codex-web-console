@@ -8,6 +8,7 @@
 		preservedEntries = [],
 		approvals,
 		omittedTurnCount = 0,
+		cwd = '',
 		onLoadFullHistory,
 		onResolveApproval
 	}: {
@@ -16,6 +17,7 @@
 		preservedEntries?: TimelineEntry[];
 		approvals: ApprovalRequest[];
 		omittedTurnCount?: number;
+		cwd?: string;
 		onLoadFullHistory?: () => void;
 		onResolveApproval?: (
 			requestId: string,
@@ -25,6 +27,50 @@
 
 	const BATCH = 5;
 	let visibleCount = $state(BATCH);
+	let lightboxSrc: string | null = $state(null);
+
+	const IMAGE_EXTS = /\.(png|jpe?g|gif|webp|svg|bmp|avif|ico)$/i;
+
+	function fileApiUrl(filePath: string): string {
+		if (!cwd) return filePath;
+		const name = filePath.split(/[\\/]/).pop() ?? 'file';
+		const params = new URLSearchParams({ path: filePath, cwd });
+		return `/api/file/${encodeURIComponent(name)}?${params}`;
+	}
+
+	function resolveImageUrl(src: string): string {
+		if (!src || !cwd) return src;
+		src = src.trim();
+		if (!src || src === 'file' || /^\d+$/.test(src)) return src;
+		if (src.startsWith('data:') || src.startsWith('http://') || src.startsWith('https://') || src.startsWith('/api/')) return src;
+		// Strip file:// or file: protocol prefix that AI might use
+		const cleanSrc = src.replace(/^file:\/\/\//i, '/').replace(/^file:/i, '');
+		if (IMAGE_EXTS.test(cleanSrc)) {
+			return fileApiUrl(cleanSrc);
+		}
+		return src;
+	}
+
+	/**
+	 * Convert standalone image filenames in plain text to markdown image syntax.
+	 * Only runs when no markdown links/images already exist in the text.
+	 * (Regular ![alt](url) and [text](url) are handled by renderMarkdown's rewriteLocalPaths.)
+	 */
+	function autoLinkStandaloneImages(text: string): string {
+		if (!cwd || !text) return text;
+		if (!IMAGE_EXTS.test(text)) return text;
+		// Skip if markdown link/image syntax already present
+		if (text.includes('![') || text.includes('<img') || text.includes('](')) return text;
+
+		return text.replace(
+			/(^|[\s(（「【])([^\s)）」】]*?\.(?:png|jpe?g|gif|webp|svg|bmp|avif|ico))(?=[\s)）」】.,;:!?]|$)/gim,
+			(_match: string, p1: string, filename: string) => {
+				const resolved = fileApiUrl(filename);
+				return `${p1}![${filename}](${resolved})`;
+			}
+		);
+	}
+
 	const visibleTurns = $derived(turns.slice(Math.max(0, turns.length - visibleCount)));
 	const remaining = $derived(Math.max(0, turns.length - visibleCount));
 	const hidden = $derived(Math.max(0, remaining));
@@ -311,7 +357,54 @@
 			batches: [] as Array<{ index: number; entries: TimelineEntry[]; summary: string; duration: string }>
 		};
 	}
+
+	function shouldShowThinking(turn: TimelineTurn) {
+		if (!isActiveTurn(turn)) return false;
+		if (turn.completedAt !== null) return false;
+		if (turn.entries.some((entry) => entry.kind !== 'user')) return false;
+		return !liveEntries.some((entry) => entry.turnId === turn.id);
+	}
+
+	function isFailedTurn(turn: TimelineTurn) {
+		const status = turn.status.toLowerCase();
+		return status.includes('failed') || status.includes('error');
+	}
+
+	function isActiveTurn(turn: TimelineTurn) {
+		const status = turn.status.toLowerCase();
+		if (isFailedTurn(turn) || status.includes('cancel') || status.includes('interrupt')) return false;
+		if (turn.completedAt !== null) return false;
+		return (
+			status.includes('active') ||
+			status.includes('running') ||
+			status.includes('executing') ||
+			status.includes('pending') ||
+			status.includes('started') ||
+			status.includes('progress') ||
+			status.includes('starting')
+		);
+	}
 </script>
+
+{#snippet renderThinkingIndicator()}
+	<article class="entry entry-thinking" aria-live="polite">
+		<span class="entry-label">Codex</span>
+		<div class="thinking-pill">
+			<span class="thinking-dot" aria-hidden="true"></span>
+			<span>思考中</span>
+		</div>
+	</article>
+{/snippet}
+
+{#snippet renderTurnFailure(turn: TimelineTurn)}
+	<article class="entry entry-failure" aria-live="polite">
+		<span class="entry-label">System</span>
+		<div class="turn-failure-card">
+			<strong>这次请求失败了</strong>
+			<p>{turn.errorMessage ?? 'Codex 没有返回具体错误信息。可以直接重试，或检查本地 Codex 服务 / 网络状态。'}</p>
+		</div>
+	</article>
+{/snippet}
 
 {#snippet renderEntry(entry: TimelineEntry)}
 	{@const kind = entry.kind}
@@ -339,7 +432,7 @@
 			<details class="command-block" open>
 				<summary><span>{entry.label}</span></summary>
 				{#if entry.text}
-					<div class="markdown">{@html renderMarkdown(entry.text)}</div>
+					<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
 				{/if}
 			</details>
 		{:else if kind === 'web_search'}
@@ -375,10 +468,30 @@
 				{#if entry.toolOutput}
 					<pre class="command-code command-output">{entry.toolOutput}</pre>
 				{/if}
+				{#if entry.images && entry.images.length > 0}
+					<div class="timeline-image-strip">
+						{#each entry.images as rawSrc, i}
+							{@const src = resolveImageUrl(rawSrc)}
+							<button type="button" class="image-thumb-btn" onclick={() => lightboxSrc = src}>
+								<img {src} alt="工具输出图片 {i + 1}" />
+							</button>
+						{/each}
+					</div>
+				{/if}
 			</details>
 		{:else}
 			{#if entry.text}
-				<div class="markdown">{@html renderMarkdown(entry.text)}</div>
+				<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
+			{/if}
+			{#if entry.images && entry.images.length > 0}
+				<div class="timeline-image-strip">
+					{#each entry.images as rawSrc, i}
+						{@const src = resolveImageUrl(rawSrc)}
+						<button type="button" class="image-thumb-btn" onclick={() => lightboxSrc = src}>
+							<img {src} alt="附件 {i + 1}" />
+						</button>
+					{/each}
+				</div>
 			{/if}
 		{/if}
 
@@ -510,6 +623,14 @@
 				{/each}
 			{/if}
 
+			{#if shouldShowThinking(turn)}
+				{@render renderThinkingIndicator()}
+			{/if}
+
+			{#if isFailedTurn(turn)}
+				{@render renderTurnFailure(turn)}
+			{/if}
+
 			{#if turn.completedAt !== null && changeSummary}
 				{@render renderChangeSummary(changeSummary)}
 			{/if}
@@ -543,7 +664,7 @@
 					<details class="command-block" open>
 						<summary><span>Reasoning</span></summary>
 						{#if entry.text}
-							<div class="markdown">{@html renderMarkdown(entry.text)}</div>
+							<div class="markdown">{@html renderMarkdown(autoLinkStandaloneImages(entry.text), cwd)}</div>
 						{/if}
 					</details>
 				</article>
@@ -586,3 +707,27 @@
 		</section>
 	{/if}
 </section>
+
+{#if lightboxSrc}
+	<!-- svelte-ignore a11y_no_static_element_interactions a11y_click_events_have_key_events -->
+	<div
+		class="image-lightbox-backdrop"
+		onclick={() => lightboxSrc = null}
+		onkeydown={(e) => { if (e.key === 'Escape') lightboxSrc = null; }}
+	>
+		<button
+			type="button"
+			class="image-lightbox-close"
+			onclick={(e) => { e.stopPropagation(); lightboxSrc = null; }}
+			aria-label="关闭预览"
+		>&times;</button>
+		<button
+			type="button"
+			class="image-lightbox-img-wrap"
+			onclick={(e) => e.stopPropagation()}
+			aria-label="图片预览"
+		>
+			<img class="image-lightbox-img" src={lightboxSrc} alt="图片预览" />
+		</button>
+	</div>
+{/if}
