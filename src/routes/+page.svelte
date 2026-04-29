@@ -1531,7 +1531,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 {/snippet}
 
 {#snippet permissionPicker()}
-	<div class="permission-picker">
+	<div class="permission-picker" class:open={permissionMenuOpen}>
 		<button
 			type="button"
 			class:full={permissionMode === 'full'}
@@ -1582,7 +1582,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 {/snippet}
 
 {#snippet modelPicker()}
-	<div class="model-picker">
+	<div class="model-picker" class:open={modelMenuOpen}>
 		<button
 			type="button"
 			class="model-trigger"
@@ -1883,7 +1883,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 									onkeydown={(e) => submitOnEnter(e, () => void createThread())}
 								></textarea>
 								<div class="prompt-toolbar">
-									<div class="prompt-toolbar-left">
+									<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
 										{@render modelPicker()}
 										{@render permissionPicker()}
 									</div>
@@ -1913,31 +1913,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								liveEntries={visibleLiveEntryList}
 								{approvals}
 								omittedTurnCount={visibleSelectedThread?.omittedTurnCount ?? 0}
+								onResolveApproval={(requestId, decision) =>
+									void resolveApproval(requestId, decision)}
 								onLoadFullHistory={() => {
 									if (visibleSelectedThreadId) void loadThread(visibleSelectedThreadId, { silent: true, full: true });
 								}}
 							/>
 						</div>
 					</div>
-
-					<!-- Approvals -->
-					{#if approvals.length > 0}
-						<div class="approval-actions">
-							{#each approvals as approval (approval.requestId)}
-								<div class="approval-buttons">
-									<button onclick={() => void resolveApproval(approval.requestId, 'accept')}>
-										Allow once
-									</button>
-									<button class="ghost" onclick={() => void resolveApproval(approval.requestId, 'acceptForSession')}>
-										Allow session
-									</button>
-									<button class="danger" onclick={() => void resolveApproval(approval.requestId, 'decline')}>
-										Decline
-									</button>
-								</div>
-							{/each}
-						</div>
-					{/if}
 				{/if}
 
 				<!-- Reply -->
@@ -1959,7 +1942,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								onkeydown={(e) => submitOnEnter(e, () => void sendReply())}
 							></textarea>
 							<div class="prompt-toolbar">
-								<div class="prompt-toolbar-left">
+								<div class="prompt-toolbar-left" class:menu-open={modelMenuOpen || permissionMenuOpen}>
 									{@render modelPicker()}
 									{@render permissionPicker()}
 								</div>

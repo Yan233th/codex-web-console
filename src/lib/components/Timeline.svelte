@@ -8,7 +8,8 @@
 		preservedEntries = [],
 		approvals,
 		omittedTurnCount = 0,
-		onLoadFullHistory
+		onLoadFullHistory,
+		onResolveApproval
 	}: {
 		turns: TimelineTurn[];
 		liveEntries: TimelineEntry[];
@@ -16,6 +17,10 @@
 		approvals: ApprovalRequest[];
 		omittedTurnCount?: number;
 		onLoadFullHistory?: () => void;
+		onResolveApproval?: (
+			requestId: string,
+			decision: 'accept' | 'acceptForSession' | 'decline'
+		) => void;
 	} = $props();
 
 	const BATCH = 5;
@@ -559,6 +564,22 @@
 					{/if}
 					{#if approval.command}
 						<pre>{approval.command}</pre>
+					{/if}
+					{#if onResolveApproval}
+						<div class="approval-card-actions">
+							<button onclick={() => onResolveApproval(approval.requestId, 'accept')}>
+								Allow once
+							</button>
+							<button
+								class="ghost"
+								onclick={() => onResolveApproval(approval.requestId, 'acceptForSession')}
+							>
+								Allow session
+							</button>
+							<button class="danger" onclick={() => onResolveApproval(approval.requestId, 'decline')}>
+								Decline
+							</button>
+						</div>
 					{/if}
 				</article>
 			{/each}

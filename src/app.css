@@ -961,15 +961,11 @@ button.danger:hover { background: #d63029; }
 	word-break: break-word;
 }
 
-.approval-actions {
-	display: flex;
-	flex-direction: column;
-	gap: 8px;
-	padding: 0 20px 12px;
-}
-.approval-buttons {
+.approval-card-actions {
 	display: flex;
 	gap: 8px;
+	flex-wrap: wrap;
+	margin-top: 12px;
 }
 
 /* ── Reply Box ── */
@@ -1008,6 +1004,11 @@ button.danger:hover { background: #d63029; }
 	position: relative;
 	display: inline-flex;
 	flex: 0 0 auto;
+	z-index: 1;
+}
+
+.model-picker.open {
+	z-index: 80;
 }
 
 button.model-trigger {
@@ -1098,7 +1099,7 @@ button.model-trigger:hover {
 	border: 1px solid var(--line);
 	background: color-mix(in srgb, var(--surface) 96%, var(--bg));
 	box-shadow: 0 18px 60px rgba(0, 0, 0, 0.24);
-	z-index: 50;
+	z-index: 90;
 }
 
 .model-menu-label {
@@ -1192,6 +1193,11 @@ button.model-option.nested {
 	position: relative;
 	display: inline-flex;
 	flex: 0 0 auto;
+	z-index: 1;
+}
+
+.permission-picker.open {
+	z-index: 80;
 }
 
 button.permission-trigger {
@@ -1250,7 +1256,7 @@ button.permission-trigger.full:hover {
 	border: 1px solid var(--line);
 	background: color-mix(in srgb, var(--surface) 94%, var(--bg));
 	box-shadow: 0 18px 44px rgba(0, 0, 0, 0.28);
-	z-index: 50;
+	z-index: 90;
 }
 
 button.permission-option {
@@ -1551,6 +1557,8 @@ button.workspace-option.selected .workspace-option-icon {
 }
 
 .prompt-toolbar {
+	position: relative;
+	z-index: 2;
 	display: flex;
 	align-items: center;
 	justify-content: space-between;
@@ -2180,6 +2188,10 @@ button.browser-close {
 		border-radius: 24px;
 	}
 
+	.approval-card-actions {
+		flex-direction: column;
+	}
+
 	.compose-panel > .prompt-composer .prompt-input,
 	.reply-box .prompt-input {
 		height: 48px;
@@ -2197,6 +2209,11 @@ button.browser-close {
 	.prompt-toolbar-left {
 		flex-wrap: nowrap;
 		overflow: hidden;
+	}
+
+	.prompt-toolbar-left.menu-open {
+		overflow: visible;
+		z-index: 80;
 	}
 
 	button.model-trigger,
