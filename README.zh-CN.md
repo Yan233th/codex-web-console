@@ -71,6 +71,31 @@ codex-web-console
 bun run build
 ```
 
+## 发布
+
+CI 会在推送到 `main` 以及所有 Pull Request 时执行：
+
+```sh
+bun run check
+bun run build
+```
+
+CD 通过 `semantic-release` 在 `main` 分支自动发布 npm 并创建 GitHub Release。
+版本规则遵循 Conventional Commits：
+
+- `feat:` -> 次版本发布
+- `fix:` -> 补丁发布
+- `perf:` 和 `refactor:` -> 补丁发布
+- `feat!:` / `fix!:` / `BREAKING CHANGE:` -> 主版本发布
+
+启用自动发布前，需要在 GitHub Actions Secrets 中配置：
+
+```text
+NPM_TOKEN
+```
+
+这个 npm token 需要对 `codex-web-console` 包具有发布权限。
+
 ## 环境要求
 
 - `PATH` 中必须可以访问 Bun

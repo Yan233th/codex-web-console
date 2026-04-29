@@ -72,6 +72,31 @@ codex-web-console
 bun run build
 ```
 
+## Release
+
+CI runs on every push to `main` and every pull request:
+
+```sh
+bun run check
+bun run build
+```
+
+CD uses `semantic-release` on `main` to publish to npm and create a GitHub release.
+Versioning follows Conventional Commits:
+
+- `feat:` -> minor release
+- `fix:` -> patch release
+- `perf:` and `refactor:` -> patch release
+- `feat!:` / `fix!:` / `BREAKING CHANGE:` -> major release
+
+Before enabling the release workflow, add this GitHub Actions secret:
+
+```text
+NPM_TOKEN
+```
+
+The npm token needs publish permission for the `codex-web-console` package.
+
 ## Requirements
 
 - Bun must be available in `PATH`
