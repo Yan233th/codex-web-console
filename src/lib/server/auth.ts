@@ -70,7 +70,7 @@ export function verifySubmittedToken(token: string): boolean {
 	return expected.length === actual.length && timingSafeEqual(expected, actual);
 }
 
-export function writeAuthCookie(cookies: Cookies): void {
+export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 	const configured = getConfiguredToken();
 	if (!configured.token) {
 		return;
@@ -80,7 +80,7 @@ export function writeAuthCookie(cookies: Cookies): void {
 		path: '/',
 		httpOnly: true,
 		sameSite: 'lax',
-		secure: !dev,
+		secure,
 		maxAge: 60 * 60 * 24 * 30
 	});
 }

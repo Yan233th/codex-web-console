@@ -55,7 +55,7 @@ export const load = async ({ locals, url }) => {
 };
 
 export const actions = {
-	login: async ({ request, cookies }) => {
+	login: async ({ request, cookies, url }) => {
 		const form = await request.formData();
 		const token = String(form.get('token') ?? '').trim();
 
@@ -67,7 +67,7 @@ export const actions = {
 			return fail(400, { loginError: 'Token is invalid.' });
 		}
 
-		writeAuthCookie(cookies);
+		writeAuthCookie(cookies, url.protocol === 'https:');
 		throw redirect(303, '/');
 	},
 	logout: async ({ cookies }) => {

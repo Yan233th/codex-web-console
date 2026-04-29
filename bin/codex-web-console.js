@@ -95,7 +95,11 @@ async function main() {
 		const url = `http://${host}:${port}`;
 		console.log(`Starting codex-web-console at ${url}`);
 		if (options.open) openBrowser(url);
-		spawnServer('bun', [buildEntry], { HOST: host, PORT: port });
+		spawnServer('bun', [buildEntry], {
+			HOST: host,
+			PORT: port,
+			ORIGIN: process.env.ORIGIN || url
+		});
 		return;
 	}
 
