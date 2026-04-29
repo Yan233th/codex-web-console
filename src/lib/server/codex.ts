@@ -75,6 +75,7 @@ type ApprovalsReviewer = 'user' | 'auto_review';
 const REQUEST_TIMEOUT_MS = 30_000;
 const DIAGNOSTIC_PREVIEW_LIMIT = 800;
 const EVENT_BACKLOG_LIMIT = 5_000;
+const THREAD_READ_RETRY_DELAYS_MS = [100, 250, 500, 1_000];
 
 export type SequencedConsoleEvent = {
 	id: number;
@@ -93,6 +94,15 @@ function diagnosticPreview(value: string): string {
 	return sanitized.length > DIAGNOSTIC_PREVIEW_LIMIT
 		? `${sanitized.slice(0, DIAGNOSTIC_PREVIEW_LIMIT)}...`
 		: sanitized;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientThreadReadError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /failed to read thread/i.test(message) && /rollout\b.*\bis empty/i.test(message);
 }
 
 function asRecord(value: unknown): Record<string, unknown> | null {
@@ -669,12 +679,48 @@ class LocalCodexService {
 
 	async readThread(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
 		await this.ensureStarted();
-		const response = (await this.request('thread/read', {
-			threadId,
-			includeTurns: true
-		})) as { thread: ThreadRecord };
+		let response: { thread: ThreadRecord } | null = null;
+		let lastError: unknown = null;
+
+		for (let attempt = 0; attempt <= THREAD_READ_RETRY_DELAYS_MS.length; attempt += 1) {
+			try {
+				response = (await this.request('thread/read', {
+					threadId,
+					includeTurns: true
+				})) as { thread: ThreadRecord };
+				break;
+			} catch (error) {
+				if (!isTransientThreadReadError(error) || attempt === THREAD_READ_RETRY_DELAYS_MS.length) {
+					throw error;
+				}
+
+				lastError = error;
+				await delay(THREAD_READ_RETRY_DELAYS_MS[attempt]);
+			}
+		}
+
+		if (!response) {
+			throw lastError instanceof Error ? lastError : new Error(String(lastError));
+		}
 
 		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
+	}
+
+	async renameThread(threadId: string, name: string): Promise<ThreadSummary> {
+		await this.ensureStarted();
+		await this.request('thread/name/set', {
+			threadId,
+			name
+		});
+		const detail = await this.readThread(threadId, { tailTurns: 1 });
+		return detail.thread;
+	}
+
+	async archiveThread(threadId: string): Promise<void> {
+		await this.ensureStarted();
+		await this.request('thread/archive', {
+			threadId
+		});
 	}
 
 	async createThread(

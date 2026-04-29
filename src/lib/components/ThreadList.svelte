@@ -13,11 +13,13 @@
 	let {
 		threads,
 		selectedThreadId,
-		onSelect
+		onSelect,
+		onManage
 	}: {
 		threads: ThreadSummary[];
 		selectedThreadId: string | null;
 		onSelect: (threadId: string) => void;
+		onManage: (thread: ThreadSummary, position: { x: number; y: number }) => void;
 	} = $props();
 
 	const collapsedWorkspaceStorageKey = 'codex-web-console.collapsedWorkspaces';
@@ -172,6 +174,12 @@
 		}
 	}
 
+	function openThreadManager(event: MouseEvent, thread: ThreadSummary) {
+		event.preventDefault();
+		event.stopPropagation();
+		onManage(thread, { x: event.clientX, y: event.clientY });
+	}
+
 	$effect(() => {
 		const groupKeys = threadGroups.map((group) => group.key);
 
@@ -242,6 +250,7 @@
 									class:selected={thread.id === selectedThreadId}
 									class="thread-item"
 									onclick={() => onSelect(thread.id)}
+									oncontextmenu={(event) => openThreadManager(event, thread)}
 								>
 									<span class="thread-title">{thread.title}</span>
 									<span class="thread-preview">{thread.preview || thread.cwd}</span>

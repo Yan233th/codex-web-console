@@ -399,6 +399,147 @@ button.danger:hover { background: #d63029; }
 	background: var(--line);
 }
 
+.thread-manager-layer {
+	position: fixed;
+	inset: 0;
+	z-index: 35;
+}
+
+.thread-manager-popover {
+	position: fixed;
+	width: 9.5rem;
+	padding: 6px;
+	display: flex;
+	flex-direction: column;
+	gap: 4px;
+	border: 1px solid var(--line);
+	border-radius: 10px;
+	background: var(--surface);
+	box-shadow: 0 8px 24px rgba(0, 0, 0, 0.14);
+}
+
+.thread-manager-header {
+	display: flex;
+	align-items: flex-start;
+	justify-content: space-between;
+	gap: 8px;
+	padding: 2px 4px;
+}
+
+.thread-manager-header h3 {
+	margin: 0;
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--ink-soft);
+}
+
+.thread-manager-header p {
+	margin: 0;
+	font-size: 12px;
+	color: var(--ink-soft);
+	word-break: break-word;
+	line-height: 1.45;
+	margin-top: 2px;
+	display: -webkit-box;
+	-webkit-line-clamp: 2;
+	-webkit-box-orient: vertical;
+	overflow: hidden;
+}
+
+.thread-manager-close {
+	width: 20px;
+	height: 20px;
+	padding: 0;
+	border-radius: 6px;
+	background: transparent;
+	color: var(--ink-soft);
+	font-size: 16px;
+	font-weight: 500;
+	line-height: 1;
+}
+
+.thread-manager-close:hover {
+	background: var(--line);
+	color: var(--ink);
+}
+
+.thread-manager-menu {
+	display: flex;
+	flex-direction: column;
+	gap: 2px;
+}
+
+.thread-manager-option {
+	width: 100%;
+	padding: 7px 8px;
+	display: flex;
+	flex-direction: row;
+	align-items: flex-start;
+	justify-content: space-between;
+	border: 0;
+	border-radius: 8px;
+	background: transparent;
+	color: var(--ink);
+	box-shadow: none;
+}
+
+.thread-manager-option:hover {
+	background: var(--line);
+}
+
+.thread-manager-option span {
+	font-size: 13px;
+	font-weight: 600;
+	color: inherit;
+}
+
+.thread-manager-option.is-danger {
+	background: transparent;
+	color: var(--danger);
+}
+
+.thread-manager-option.is-danger:hover {
+	background: color-mix(in srgb, var(--danger) 10%, transparent);
+}
+
+.thread-manager-field {
+	display: flex;
+	flex-direction: column;
+	gap: 8px;
+}
+
+.thread-manager-field span {
+	font-size: 12px;
+	font-weight: 700;
+	color: var(--ink-soft);
+}
+
+.thread-manager-warning {
+	margin: 0;
+	padding: 10px;
+	border-radius: 8px;
+	background: color-mix(in srgb, var(--danger) 7%, transparent);
+	font-size: 13px;
+	line-height: 1.5;
+	color: var(--ink);
+}
+
+.thread-manager-actions {
+	display: flex;
+	justify-content: flex-end;
+	gap: 8px;
+	padding-top: 4px;
+}
+
+.danger-button {
+	background: color-mix(in srgb, var(--danger) 92%, #a31515);
+	color: #fff;
+}
+
+.danger-button:hover {
+	background: #d63029;
+}
+
 .thread-title {
 	font-size: 14px;
 	font-weight: 600;
@@ -2229,6 +2370,7 @@ button.browser-close {
 
 	.permission-picker {
 		min-width: 0;
+		position: static;
 	}
 
 	button.permission-trigger {
@@ -2241,6 +2383,40 @@ button.browser-close {
 		overflow: hidden;
 		text-overflow: ellipsis;
 		white-space: nowrap;
+	}
+
+	.permission-picker.open {
+		z-index: 90;
+	}
+
+	.permission-picker.open .permission-menu {
+		left: auto;
+		right: 0;
+		bottom: calc(100% + 10px);
+		width: min(320px, calc(100vw - 20px));
+		max-height: min(52vh, 360px);
+		overflow-y: auto;
+		overscroll-behavior: contain;
+	}
+
+	button.permission-option {
+		align-items: flex-start;
+		padding: 12px 13px;
+	}
+
+	.permission-option-copy {
+		gap: 3px;
+	}
+
+	.permission-option-copy span,
+	.permission-option-copy small {
+		white-space: normal;
+		overflow: visible;
+		text-overflow: clip;
+	}
+
+	.permission-option-copy small {
+		line-height: 1.35;
 	}
 
 	.composer-send,

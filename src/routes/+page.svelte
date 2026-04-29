@@ -45,6 +45,19 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		event: ConsoleEvent;
 	};
 
+	type ThreadListResponse = {
+		threads: ThreadSummary[];
+		signature: string;
+	};
+
+	type ThreadListProbeResponse = {
+		signature: string;
+		count: number;
+		latestUpdatedAt: number | null;
+	};
+
+	const THREAD_LIST_PROBE_INTERVAL_MS = 5000;
+
 	const authenticated = $derived(Boolean(data.authenticated));
 
 	// ── State ──
@@ -72,6 +85,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let source: EventSource | null = null;
 	let eventPollController: AbortController | null = null;
 	let lastEventId = 0;
+	let threadListSignature = $state('');
 	let forceEventPolling = $state(false);
 	let liveEntryFlushFrame: number | null = null;
 	let followLiveOutputFrame: number | null = null;
@@ -88,6 +102,14 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let modelMenuOpen = $state(false);
 	let modelListOpen = $state(false);
 	let speedListOpen = $state(false);
+	let threadManagerDialog = $state<{
+		mode: 'menu' | 'rename' | 'delete';
+		thread: ThreadSummary;
+		x: number;
+		y: number;
+	} | null>(null);
+	let threadNameDraft = $state('');
+	let threadMutationPending = $state(false);
 	let models = $state<ModelOption[]>([]);
 	let modelsLoaded = $state(false);
 	let selectedModelId = $state('gpt-5.5');
@@ -528,6 +550,37 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return [...preserved, ...freshThreads];
 	}
 
+	function buildThreadListSignature(items: ThreadSummary[]): string {
+		return items
+			.map((thread) =>
+				[
+					thread.id,
+					thread.updatedAt ?? '',
+					thread.status,
+					thread.title,
+					thread.preview,
+					thread.cwd,
+					thread.provider ?? ''
+				].join('\u001f')
+			)
+			.join('\u001e');
+	}
+
+	function sameThreadSummary(left: ThreadSummary, right: ThreadSummary) {
+		return left.id === right.id &&
+			left.updatedAt === right.updatedAt &&
+			left.status === right.status &&
+			left.title === right.title &&
+			left.preview === right.preview &&
+			left.cwd === right.cwd &&
+			left.provider === right.provider;
+	}
+
+	function sameThreadList(left: ThreadSummary[], right: ThreadSummary[]) {
+		return left.length === right.length &&
+			left.every((thread, index) => sameThreadSummary(thread, right[index]));
+	}
+
 	function isThreadNotFound(error: unknown) {
 		const message = error instanceof Error ? error.message : String(error);
 		return /thread not found/i.test(message);
@@ -565,6 +618,107 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	function selectWorkspace(path: string) {
 		workspacePath = path;
+	}
+
+	function closeThreadManagerDialog() {
+		threadManagerDialog = null;
+		threadNameDraft = '';
+		threadMutationPending = false;
+	}
+
+	function updateThreadSummaryLocally(updated: ThreadSummary) {
+		threads = threads.map((thread) => (thread.id === updated.id ? updated : thread));
+		if (selectedThread?.thread.id === updated.id) {
+			selectedThread = {
+				...selectedThread,
+				thread: updated
+			};
+		}
+	}
+
+	function removeThreadLocally(threadId: string) {
+		threads = threads.filter((thread) => thread.id !== threadId);
+		removeLiveBuffer(threadId);
+		if (selectedThreadId === threadId || selectedThread?.thread.id === threadId) {
+			clearSelectedThreadState();
+			void goto(threadHref(null), { keepFocus: true, noScroll: true });
+		}
+		if (typeof localStorage !== 'undefined' && localStorage.getItem(LAST_THREAD_STORAGE_KEY) === threadId) {
+			localStorage.removeItem(LAST_THREAD_STORAGE_KEY);
+		}
+	}
+
+	function openThreadManager(thread: ThreadSummary, position: { x: number; y: number }) {
+		const viewportWidth = typeof window === 'undefined' ? 0 : window.innerWidth;
+		const viewportHeight = typeof window === 'undefined' ? 0 : window.innerHeight;
+		const panelWidth = 360;
+		const panelHeight = 260;
+		threadManagerDialog = {
+			mode: 'menu',
+			thread,
+			x: Math.max(12, Math.min(position.x, viewportWidth - panelWidth - 12)),
+			y: Math.max(12, Math.min(position.y, viewportHeight - panelHeight - 12))
+		};
+	}
+
+	function beginRenameThread(thread: ThreadSummary) {
+		if (!threadManagerDialog) return;
+		threadManagerDialog = { ...threadManagerDialog, mode: 'rename', thread };
+		threadNameDraft = thread.title;
+	}
+
+	function beginDeleteThread(thread: ThreadSummary) {
+		if (!threadManagerDialog) return;
+		threadManagerDialog = { ...threadManagerDialog, mode: 'delete', thread };
+	}
+
+	async function submitThreadRename() {
+		const dialog = threadManagerDialog;
+		const name = threadNameDraft.trim();
+		if (!dialog || dialog.mode !== 'rename') return;
+		if (!name) {
+			errorMessage = 'Thread name is required.';
+			return;
+		}
+
+		threadMutationPending = true;
+		errorMessage = null;
+		try {
+			const payload = await readJson<{ thread: ThreadSummary }>(
+				await fetch(`/api/threads/${dialog.thread.id}`, {
+					method: 'PATCH',
+					headers: { 'Content-Type': 'application/json' },
+					body: JSON.stringify({ name })
+				})
+			);
+			updateThreadSummaryLocally(payload.thread);
+			bootErrorMessage = null;
+			closeThreadManagerDialog();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+			threadMutationPending = false;
+		}
+	}
+
+	async function submitThreadDelete() {
+		const dialog = threadManagerDialog;
+		if (!dialog || dialog.mode !== 'delete') return;
+
+		threadMutationPending = true;
+		errorMessage = null;
+		try {
+			await readJson<{ ok: true }>(
+				await fetch(`/api/threads/${dialog.thread.id}`, {
+					method: 'DELETE'
+				})
+			);
+			bootErrorMessage = null;
+			removeThreadLocally(dialog.thread.id);
+			closeThreadManagerDialog();
+		} catch (error) {
+			errorMessage = error instanceof Error ? error.message : String(error);
+			threadMutationPending = false;
+		}
 	}
 
 	function clearSelectedThreadState(message?: string) {
@@ -1019,6 +1173,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	$effect(() => {
 		threads = [...data.threads];
+		threadListSignature = buildThreadListSignature(data.threads);
 		selectedThread = data.selectedThread;
 		selectedThreadId = data.selectedThread?.thread.id ?? null;
 		runningTurnId = null;
@@ -1029,11 +1184,17 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	});
 
 	async function loadThreads() {
-		const payload = await readJson<{ threads: ThreadSummary[] }>(await fetch('/api/threads'));
+		const payload = await readJson<ThreadListResponse>(
+			await fetch('/api/threads', { cache: 'no-store' })
+		);
 		bootErrorMessage = null;
 		const localSelection =
 			selectedThread?.thread ?? threads.find((thread) => thread.id === selectedThreadId);
-		threads = mergeThreadSummaries(payload.threads, localSelection);
+		const nextThreads = mergeThreadSummaries(payload.threads, localSelection);
+		threadListSignature = payload.signature;
+		if (!sameThreadList(threads, nextThreads)) {
+			threads = nextThreads;
+		}
 	}
 
 	type ScrollSnapshot = { mode: 'window' | 'element'; top: number; stickToBottom: boolean };
@@ -1101,6 +1262,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			draftingThread = false;
 			const optimisticTurn = createOptimisticTurn(prompt);
 			threads = [payload.thread, ...threads.filter((thread) => thread.id !== payload.thread.id)];
+			threadListSignature = buildThreadListSignature(threads);
 			selectedThreadId = payload.thread.id;
 			selectedThread = {
 				thread: payload.thread,
@@ -1301,8 +1463,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	function shouldPollEvents() {
 		if (forceEventPolling) return true;
 		if (typeof window === 'undefined') return false;
-		const host = window.location.hostname.toLowerCase();
-		return host !== 'localhost' && host !== '127.0.0.1' && host !== '::1';
+		return true;
 	}
 
 	function abortableDelay(ms: number, signal: AbortSignal) {
@@ -1337,7 +1498,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		while (!signal.aborted) {
 			try {
 				const params = new URLSearchParams({
-					transport: 'poll'
+					transport: 'poll',
+					wait: '5000'
 				});
 				if (lastEventId > 0) params.set('since', String(lastEventId));
 				const payload = await readJson<{ events: SequencedConsoleEvent[]; latestId: number }>(
@@ -1450,6 +1612,39 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 	$effect(() => {
 		if (authenticated && selectedThreadId && selectedThread?.thread.id !== selectedThreadId) void loadThread(selectedThreadId);
+	});
+
+	$effect(() => {
+		if (!authenticated || typeof window === 'undefined') return;
+		let cancelled = false;
+		let probeInFlight = false;
+
+		const probeThreadList = async () => {
+			if (probeInFlight) return;
+			probeInFlight = true;
+			try {
+				const payload = await readJson<ThreadListProbeResponse>(
+					await fetch('/api/threads?view=probe', { cache: 'no-store' })
+				);
+				if (!cancelled && payload.signature !== threadListSignature) {
+					await loadThreads();
+				}
+			} catch {
+				// Keep probing quietly in the background.
+			} finally {
+				probeInFlight = false;
+			}
+		};
+
+		const timer = window.setInterval(() => {
+			if (document.hidden) return;
+			void probeThreadList();
+		}, THREAD_LIST_PROBE_INTERVAL_MS);
+
+		return () => {
+			cancelled = true;
+			window.clearInterval(timer);
+		};
 	});
 
 	$effect(() => {
@@ -1730,7 +1925,15 @@ import type { SubmitFunction } from '@sveltejs/kit';
 
 <svelte:window
 	onclick={() => { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; }}
-	onkeydown={(event) => { if (event.key === 'Escape') { permissionMenuOpen = false; modelMenuOpen = false; modelListOpen = false; speedListOpen = false; } }}
+	onkeydown={(event) => {
+		if (event.key === 'Escape') {
+			permissionMenuOpen = false;
+			modelMenuOpen = false;
+			modelListOpen = false;
+			speedListOpen = false;
+			closeThreadManagerDialog();
+		}
+	}}
 />
 
 {#if !authenticated}
@@ -1802,6 +2005,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 				threads={visibleThreads}
 				selectedThreadId={draftingThread ? null : visibleSelectedThreadId}
 				onSelect={(id) => void openThread(id)}
+				onManage={openThreadManager}
 			/>
 
 			<div class="status-bar">
@@ -2010,4 +2214,107 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		onNavigate={(p) => void openBrowser(p)}
 		onSelect={(p) => { workspacePath = p; browserOpen = false; }}
 	/>
+
+	{#if threadManagerDialog}
+		{@const managedThread = threadManagerDialog.thread}
+		<div
+			class="thread-manager-layer"
+			role="presentation"
+			onclick={(event) => {
+				if (event.target === event.currentTarget && !threadMutationPending) {
+					closeThreadManagerDialog();
+				}
+			}}
+		>
+			<div
+				class="thread-manager-popover"
+				style={`left:${threadManagerDialog.x}px;top:${threadManagerDialog.y}px;`}
+				role="dialog"
+				tabindex="-1"
+				aria-modal="true"
+				aria-labelledby="thread-manager-title"
+				onmousedown={(event) => event.stopPropagation()}
+			>
+				<div class="thread-manager-header">
+					<div>
+						<h3 id="thread-manager-title">
+							{threadManagerDialog.mode === 'menu'
+								? '管理'
+								: threadManagerDialog.mode === 'rename'
+									? '重命名'
+									: '删除对话'}
+						</h3>
+						{#if threadManagerDialog.mode !== 'menu'}
+							<p>{managedThread.title}</p>
+						{/if}
+					</div>
+					<button
+						type="button"
+						class="thread-manager-close"
+						aria-label="关闭"
+						onclick={() => closeThreadManagerDialog()}
+						disabled={threadMutationPending}
+					>
+						×
+					</button>
+				</div>
+
+				{#if threadManagerDialog.mode === 'menu'}
+					<div class="thread-manager-menu">
+						<button
+							type="button"
+							class="thread-manager-option"
+							onclick={() => beginRenameThread(managedThread)}
+						>
+							<span>重命名</span>
+						</button>
+						<button
+							type="button"
+							class="thread-manager-option is-danger"
+							onclick={() => beginDeleteThread(managedThread)}
+						>
+							<span>删除</span>
+						</button>
+					</div>
+				{:else if threadManagerDialog.mode === 'rename'}
+					<label class="thread-manager-field">
+						<span>对话名称</span>
+						<input
+							bind:value={threadNameDraft}
+							maxlength="120"
+							placeholder="输入新的对话名称"
+							disabled={threadMutationPending}
+							onkeydown={(event) => {
+								if (event.key === 'Enter' && !event.shiftKey) {
+									event.preventDefault();
+									void submitThreadRename();
+								}
+							}}
+						/>
+					</label>
+				{:else}
+					<p class="thread-manager-warning">
+						删除后该对话会从列表中移除。
+					</p>
+				{/if}
+
+				{#if threadManagerDialog.mode !== 'menu'}
+					<div class="thread-manager-actions">
+						<button type="button" class="ghost" onclick={() => closeThreadManagerDialog()} disabled={threadMutationPending}>
+							取消
+						</button>
+						{#if threadManagerDialog.mode === 'rename'}
+							<button type="button" onclick={() => void submitThreadRename()} disabled={threadMutationPending || !threadNameDraft.trim()}>
+								{threadMutationPending ? '保存中…' : '保存'}
+							</button>
+						{:else if threadManagerDialog.mode === 'delete'}
+							<button type="button" class="danger-button" onclick={() => void submitThreadDelete()} disabled={threadMutationPending}>
+								{threadMutationPending ? '删除中…' : '确认删除'}
+							</button>
+						{/if}
+					</div>
+				{/if}
+			</div>
+		</div>
+	{/if}
 {/if}

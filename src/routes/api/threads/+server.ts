@@ -1,7 +1,13 @@
 import { error, json } from '@sveltejs/kit';
 
 import { codex } from '$lib/server/codex';
-import type { ModelSelection, PermissionMode, ReasoningEffort, ServiceTier } from '$lib/types';
+import type {
+	ModelSelection,
+	PermissionMode,
+	ReasoningEffort,
+	ServiceTier,
+	ThreadSummary
+} from '$lib/types';
 
 function requireAuth(locals: App.Locals) {
 	if (!locals.authenticated) {
@@ -42,11 +48,36 @@ function parseModelSelection(value: unknown): ModelSelection | undefined {
 	};
 }
 
-export const GET = async ({ locals }) => {
+function buildThreadListSignature(threads: ThreadSummary[]): string {
+	return threads
+		.map((thread) =>
+			[
+				thread.id,
+				thread.updatedAt ?? '',
+				thread.status,
+				thread.title,
+				thread.preview,
+				thread.cwd,
+				thread.provider ?? ''
+			].join('\u001f')
+		)
+		.join('\u001e');
+}
+
+export const GET = async ({ locals, url }) => {
 	requireAuth(locals);
 
 	try {
-		return json({ threads: await codex.listThreads() });
+		const threads = await codex.listThreads();
+		const signature = buildThreadListSignature(threads);
+		if (url.searchParams.get('view') === 'probe') {
+			return json({
+				signature,
+				count: threads.length,
+				latestUpdatedAt: threads[0]?.updatedAt ?? null
+			});
+		}
+		return json({ threads, signature });
 	} catch (err) {
 		const message = err instanceof Error ? err.message : String(err);
 		return json({ error: message }, { status: 500 });
