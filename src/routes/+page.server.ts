@@ -2,7 +2,7 @@ import { homedir } from 'node:os';
 
 import { fail, redirect } from '@sveltejs/kit';
 
-import { clearAuthCookie, verifySubmittedToken, writeAuthCookie } from '$lib/server/auth';
+import { clearAuthCookie, saveTokenToConfig, verifySubmittedToken, writeAuthCookie } from '$lib/server/auth';
 import { codex } from '$lib/server/codex';
 
 export const load = async ({ locals, url }) => {
@@ -10,6 +10,7 @@ export const load = async ({ locals, url }) => {
 		return {
 			authenticated: false,
 			tokenConfigured: locals.tokenConfigured,
+			setupMode: !locals.tokenConfigured,
 			fallbackTokenActive: locals.fallbackTokenActive,
 			threads: [],
 			selectedThread: null,
@@ -35,6 +36,7 @@ export const load = async ({ locals, url }) => {
 		return {
 			authenticated: true,
 			tokenConfigured: true,
+			setupMode: false,
 			fallbackTokenActive: locals.fallbackTokenActive,
 			threads,
 			selectedThread,
@@ -45,6 +47,7 @@ export const load = async ({ locals, url }) => {
 		return {
 			authenticated: true,
 			tokenConfigured: true,
+			setupMode: false,
 			fallbackTokenActive: locals.fallbackTokenActive,
 			threads: [],
 			selectedThread: null,
@@ -55,6 +58,27 @@ export const load = async ({ locals, url }) => {
 };
 
 export const actions = {
+	setup: async ({ request, cookies, url }) => {
+		const form = await request.formData();
+		const token = String(form.get('token') ?? '').trim();
+
+		if (!token) {
+			return fail(400, { setupError: 'Token is required.' });
+		}
+
+		if (token.length < 4) {
+			return fail(400, { setupError: 'Token must be at least 4 characters.' });
+		}
+
+		saveTokenToConfig(token);
+
+		// Verify immediately and log in
+		if (verifySubmittedToken(token)) {
+			writeAuthCookie(cookies, url.protocol === 'https:');
+		}
+
+		throw redirect(303, '/');
+	},
 	login: async ({ request, cookies, url }) => {
 		const form = await request.formData();
 		const token = String(form.get('token') ?? '').trim();

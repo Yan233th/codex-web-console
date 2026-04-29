@@ -5,12 +5,16 @@
 
 	let {
 		tokenConfigured,
+		setupMode,
 		fallbackTokenActive,
-		loginError
+		loginError,
+		setupError
 	}: {
 		tokenConfigured: boolean;
+		setupMode: boolean;
 		fallbackTokenActive: boolean;
 		loginError?: string;
+		setupError?: string;
 	} = $props();
 
 	const enhanceRedirect: SubmitFunction = () => {
@@ -27,29 +31,48 @@
 <section class="login-shell">
 	<div class="login-card">
 		<h1>Codex Web Console</h1>
-		<p>Enter your access token to continue.</p>
 
-		{#if !tokenConfigured}
+		{#if setupMode}
+			<p>Set an access token to protect your console.</p>
 			<p class="warning">
-				Set <code>CODEX_WEB_CONSOLE_TOKEN</code> before logging in.
+				This token will be saved locally and used for future logins.
 			</p>
-		{:else if fallbackTokenActive}
-			<p class="warning">Dev fallback token is active.</p>
-		{/if}
 
-		<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
-			<input
-				name="token"
-				type="password"
-				autocomplete="off"
-				spellcheck="false"
-				placeholder="Paste token"
-			/>
-			<button type="submit">Continue</button>
-		</form>
+			<form method="POST" action="?/setup" class="login-form" use:enhance={enhanceRedirect}>
+				<input
+					name="token"
+					type="password"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="Enter a new access token"
+				/>
+				<button type="submit">Save &amp; Continue</button>
+			</form>
 
-		{#if loginError}
-			<p class="error">{loginError}</p>
+			{#if setupError}
+				<p class="error">{setupError}</p>
+			{/if}
+		{:else}
+			<p>Enter your access token to continue.</p>
+
+			{#if fallbackTokenActive}
+				<p class="warning">Dev fallback token is active.</p>
+			{/if}
+
+			<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
+				<input
+					name="token"
+					type="password"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="Paste token"
+				/>
+				<button type="submit">Continue</button>
+			</form>
+
+			{#if loginError}
+				<p class="error">{loginError}</p>
+			{/if}
 		{/if}
 	</div>
 </section>

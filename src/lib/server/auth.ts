@@ -1,6 +1,9 @@
 import { dev } from '$app/environment';
 import { env } from '$env/dynamic/private';
 import { createHash, timingSafeEqual } from 'node:crypto';
+import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
+import { join } from 'node:path';
 import type { Cookies } from '@sveltejs/kit';
 
 const AUTH_COOKIE = 'cwc_auth';
@@ -10,9 +13,28 @@ function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');
 }
 
+function getConfigPath(): string {
+	return join(homedir(), '.codex-web-console', 'config.json');
+}
+
+function readTokenFromFile(): string | null {
+	try {
+		const configPath = getConfigPath();
+		if (!existsSync(configPath)) return null;
+		const raw = readFileSync(configPath, 'utf-8');
+		const data = JSON.parse(raw);
+		const token = typeof data.token === 'string' ? data.token.trim() : '';
+		return token || null;
+	} catch {
+		return null;
+	}
+}
+
 function readAccessToken(): string | null {
-	const token = env.CODEX_WEB_CONSOLE_TOKEN?.trim();
-	return token ? token : null;
+	const envToken = env.CODEX_WEB_CONSOLE_TOKEN?.trim();
+	if (envToken) return envToken;
+
+	return readTokenFromFile();
 }
 
 export function getConfiguredToken(): {
@@ -87,4 +109,16 @@ export function writeAuthCookie(cookies: Cookies, secure: boolean): void {
 
 export function clearAuthCookie(cookies: Cookies): void {
 	cookies.delete(AUTH_COOKIE, { path: '/' });
+}
+
+export function saveTokenToConfig(token: string): void {
+	const configDir = join(homedir(), '.codex-web-console');
+	if (!existsSync(configDir)) {
+		mkdirSync(configDir, { recursive: true });
+	}
+	writeFileSync(join(configDir, 'config.json'), JSON.stringify({ token }, null, 2), 'utf-8');
+}
+
+export function readTokenFromConfig(): string | null {
+	return readTokenFromFile();
 }

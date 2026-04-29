@@ -1,9 +1,27 @@
 #!/usr/bin/env node
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
+import { existsSync, readFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { fileURLToPath } from 'node:url';
-import { dirname, resolve } from 'node:path';
+import { dirname, join, resolve } from 'node:path';
 import { createServer } from 'node:net';
+
+function loadTokenFromConfig() {
+	if (process.env.CODEX_WEB_CONSOLE_TOKEN) return;
+	try {
+		const configPath = join(homedir(), '.codex-web-console', 'config.json');
+		if (!existsSync(configPath)) return;
+		const raw = readFileSync(configPath, 'utf-8');
+		const data = JSON.parse(raw);
+		if (typeof data.token === 'string' && data.token.trim()) {
+			process.env.CODEX_WEB_CONSOLE_TOKEN = data.token.trim();
+		}
+	} catch {
+		// ignore
+	}
+}
+
+loadTokenFromConfig();
 
 const __filename = fileURLToPath(import.meta.url);
 const projectRoot = resolve(dirname(__filename), '..');

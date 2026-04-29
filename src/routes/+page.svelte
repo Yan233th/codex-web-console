@@ -29,6 +29,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		data: {
 			authenticated: boolean;
 			tokenConfigured: boolean;
+			setupMode: boolean;
 			fallbackTokenActive: boolean;
 			threads: ThreadSummary[];
 			selectedThread: ThreadDetail | null;
@@ -37,6 +38,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		};
 		form?: {
 			loginError?: string;
+			setupError?: string;
 		};
 	} = $props();
 
@@ -2074,8 +2076,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 {#if !authenticated}
 	<LoginView
 		tokenConfigured={data.tokenConfigured}
+		setupMode={data.setupMode}
 		fallbackTokenActive={data.fallbackTokenActive}
 		loginError={form?.loginError}
+		setupError={form?.setupError}
 	/>
 {:else}
 	<div class:sidebar-collapsed={sidebarCollapsed} class="app-shell">
