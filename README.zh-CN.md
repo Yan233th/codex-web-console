@@ -88,14 +88,17 @@ CD 通过 `semantic-release` 在 `main` 分支自动发布 npm 并创建 GitHub 
 - `perf:` 和 `refactor:` -> 补丁发布
 - `feat!:` / `fix!:` / `BREAKING CHANGE:` -> 主版本发布
 
-推送到 `main` 的自动发布会继续走 `semantic-release`，并优先使用 npm Trusted Publishing（OIDC）。
-手动执行 `workflow_dispatch` 时，不再做 commit 规则判断，而是直接把当前 `package.json` 里的版本发布到 npm。可以选择：
+推送到 `main` 的自动发布默认走 npm Trusted Publishing（OIDC）。
+手动执行 `workflow_dispatch` 时，默认不会发布。
+只有满足下面两个条件才会真正上传 npm：
+
+- `release_now = true`
+- `release_version` 填了你要发布的准确版本号
+
+手动发布时，可以选择：
 
 - `oidc`：通过 npm Trusted Publishing 发布
 - `npm-token`：通过 GitHub Secret 中的 `NPM_TOKEN` 兜底发布
-
-手动发布还支持填写 `npm_tag`，比如 `latest` 或 `next`。
-注意先修改 `package.json` 版本号；如果该版本已经存在于 npm，workflow 会直接失败。
 
 如果要启用手动 token 发布，需要在 GitHub Actions Secrets 中配置：
 
@@ -104,6 +107,7 @@ NPM_TOKEN
 ```
 
 这个 npm token 需要对 `codex-web-console` 包具有发布权限。
+如果你指定的版本已经存在于 npm，手动发布会直接失败。
 
 ## 环境要求
 
