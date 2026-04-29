@@ -3,6 +3,14 @@
 	"private": false,
 	"version": "0.0.5",
 	"type": "module",
+	"repository": {
+		"type": "git",
+		"url": "git+https://github.com/lycohana/codex-web-console.git"
+	},
+	"homepage": "https://github.com/lycohana/codex-web-console#readme",
+	"bugs": {
+		"url": "https://github.com/lycohana/codex-web-console/issues"
+	},
 	"bin": {
 		"codex-web-console": "bin/codex-web-console.js"
 	},
