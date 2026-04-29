@@ -80,16 +80,8 @@ bun run check
 bun run build
 ```
 
-CD 通过 `semantic-release` 在 `main` 分支自动发布 npm 并创建 GitHub Release。
-版本规则遵循 Conventional Commits：
-
-- `feat:` -> 次版本发布
-- `fix:` -> 补丁发布
-- `perf:` 和 `refactor:` -> 补丁发布
-- `feat!:` / `fix!:` / `BREAKING CHANGE:` -> 主版本发布
-
-推送到 `main` 的自动发布默认走 npm Trusted Publishing（OIDC）。
-手动执行 `workflow_dispatch` 时，默认不会发布。
+npm 发布现在只支持手动触发。
+执行 `workflow_dispatch` 时，默认不会发布。
 只有满足下面两个条件才会真正上传 npm：
 
 - `release_now = true`

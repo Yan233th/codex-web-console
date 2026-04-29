@@ -81,16 +81,8 @@ bun run check
 bun run build
 ```
 
-CD uses `semantic-release` on `main` to publish to npm and create a GitHub release.
-Versioning follows Conventional Commits:
-
-- `feat:` -> minor release
-- `fix:` -> patch release
-- `perf:` and `refactor:` -> patch release
-- `feat!:` / `fix!:` / `BREAKING CHANGE:` -> major release
-
-Automatic releases on `main` use npm trusted publishing (OIDC) when configured on npm.
-For manual `workflow_dispatch` runs, publishing is blocked by default.
+Package publishing is manual only.
+For `workflow_dispatch` runs, publishing is blocked by default.
 It will publish only when:
 
 - `release_now` is set to `true`

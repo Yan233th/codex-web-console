@@ -1,9 +1,6 @@
 name: Release
 
 on:
-  push:
-    branches:
-      - main
   workflow_dispatch:
     inputs:
       publish_auth:
@@ -61,14 +58,7 @@ jobs:
           bun run check
           bun run build
 
-      - name: Release with semantic-release
-        if: github.event_name != 'workflow_dispatch'
-        env:
-          GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-        run: bunx semantic-release
-
       - name: Validate manual publish inputs
-        if: github.event_name == 'workflow_dispatch'
         run: |
           if [ "${{ inputs.release_now }}" != "true" ]; then
             echo "Manual publish skipped because release_now is not true."
@@ -81,7 +71,7 @@ jobs:
           node -e "const v='${{ inputs.release_version }}'; if(!/^\\d+\\.\\d+\\.\\d+(?:-[0-9A-Za-z.-]+)?(?:\\+[0-9A-Za-z.-]+)?$/.test(v)){ console.error('Invalid semver:', v); process.exit(1); }"
 
       - name: Publish specified version to npm
-        if: github.event_name == 'workflow_dispatch' && inputs.release_now == true
+        if: inputs.release_now == true
         env:
           NPM_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
           NODE_AUTH_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
