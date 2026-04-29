@@ -6,6 +6,10 @@
 			"@semantic-release/commit-analyzer",
 			{
 				"preset": "conventionalcommits",
+				"parserOpts": {
+					"headerPattern": "^(\\w*)(?:\\((.*)\\))?(!?):\\s*(.*)$",
+					"headerCorrespondence": ["type", "scope", "breaking", "subject"]
+				},
 				"releaseRules": [
 					{
 						"breaking": true,
@@ -33,7 +37,11 @@
 		[
 			"@semantic-release/release-notes-generator",
 			{
-				"preset": "conventionalcommits"
+				"preset": "conventionalcommits",
+				"parserOpts": {
+					"headerPattern": "^(\\w*)(?:\\((.*)\\))?(!?):\\s*(.*)$",
+					"headerCorrespondence": ["type", "scope", "breaking", "subject"]
+				}
 			}
 		],
 		"@semantic-release/changelog",

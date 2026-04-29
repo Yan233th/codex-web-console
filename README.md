@@ -89,11 +89,15 @@ Versioning follows Conventional Commits:
 - `perf:` and `refactor:` -> patch release
 - `feat!:` / `fix!:` / `BREAKING CHANGE:` -> major release
 
-Automatic releases on `main` use npm trusted publishing (OIDC) when configured on npm.
-For manual `workflow_dispatch` runs, you can choose:
+Automatic releases on `main` use `semantic-release` plus npm trusted publishing (OIDC) when configured on npm.
+Manual `workflow_dispatch` runs do not use commit analysis. They publish the current `package.json` version directly to npm.
+For manual runs, you can choose:
 
 - `oidc`: publish via npm trusted publishing
 - `npm-token`: publish via the `NPM_TOKEN` GitHub secret as a fallback
+
+Manual runs also accept an `npm_tag` input such as `latest` or `next`.
+Make sure you bump `package.json` first, because the workflow will fail if that version already exists on npm.
 
 Before enabling manual token-based publishing, add this GitHub Actions secret:
 

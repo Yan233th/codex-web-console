@@ -14,6 +14,11 @@ on:
         options:
           - oidc
           - npm-token
+      npm_tag:
+        description: npm dist-tag for manual publish
+        required: true
+        default: latest
+        type: string
 
 permissions:
   contents: write
@@ -51,9 +56,23 @@ jobs:
           bun run check
           bun run build
 
-      - name: Release
+      - name: Release with semantic-release
+        if: github.event_name != 'workflow_dispatch'
         env:
           GITHUB_TOKEN: ${{ secrets.GITHUB_TOKEN }}
-          NPM_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
-          NODE_AUTH_TOKEN: ${{ github.event_name == 'workflow_dispatch' && inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
         run: bunx semantic-release
+
+      - name: Publish current package version to npm
+        if: github.event_name == 'workflow_dispatch'
+        env:
+          NPM_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
+          NODE_AUTH_TOKEN: ${{ inputs.publish_auth == 'npm-token' && secrets.NPM_TOKEN || '' }}
+        run: |
+          PACKAGE_NAME=$(node -p "require('./package.json').name")
+          PACKAGE_VERSION=$(node -p "require('./package.json').version")
+          echo "Publishing ${PACKAGE_NAME}@${PACKAGE_VERSION} with tag ${{ inputs.npm_tag }}"
+          if npm view "${PACKAGE_NAME}@${PACKAGE_VERSION}" version --registry=https://registry.npmjs.org > /dev/null 2>&1; then
+            echo "::error::${PACKAGE_NAME}@${PACKAGE_VERSION} already exists on npm. Bump package.json version before manual publish."
+            exit 1
+          fi
+          npm publish --tag "${{ inputs.npm_tag }}"
