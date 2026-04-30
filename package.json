@@ -1,6 +1,6 @@
 {
  "name": "codex-web-console",
- "private": true,
+ "private": false,
  "version": "1.0.2",
  "type": "module",
  "repository": {
