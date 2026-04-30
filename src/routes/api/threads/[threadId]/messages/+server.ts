@@ -34,11 +34,13 @@ function parseModelSelection(value: unknown): ModelSelection | undefined {
 	const model = typeof record.model === 'string' ? record.model.trim() : '';
 	const effort = parseReasoningEffort(record.effort);
 	const serviceTier = parseServiceTier(record.serviceTier);
+	const provider = typeof record.provider === 'string' ? record.provider.trim() : '';
 
 	return {
 		...(model ? { model } : {}),
 		...(effort ? { effort } : {}),
-		...(serviceTier ? { serviceTier } : {})
+		...(serviceTier ? { serviceTier } : {}),
+		...(provider ? { provider } : {})
 	};
 }
 

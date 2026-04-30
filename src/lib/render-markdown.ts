@@ -129,13 +129,14 @@ export function renderMarkdown(input: string | null | undefined, cwd?: string): 
 		allowedAttributes,
 		allowedSchemes: ['http', 'https', 'mailto', 'tel', 'data'],
 		allowedSchemesByTag: {
-			img: ['http', 'https', 'data']
+			img: ['http', 'https'],
+			a: ['http', 'https', 'mailto', 'tel']
 		},
-		allowProtocolRelative: true,
+		allowProtocolRelative: false,
 		transformTags: {
 			a: sanitizeHtml.simpleTransform('a', {
 				target: '_blank',
-				rel: 'noreferrer'
+				rel: 'noopener noreferrer'
 			})
 		}
 	});

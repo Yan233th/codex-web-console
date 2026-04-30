@@ -23,12 +23,14 @@ export interface ModelOption {
 	defaultReasoningEffort: ReasoningEffort;
 	additionalSpeedTiers: string[];
 	isDefault: boolean;
+	provider?: string | null;
 }
 
 export interface ModelSelection {
 	model?: string | null;
 	effort?: ReasoningEffort | null;
 	serviceTier?: ServiceTier | null;
+	provider?: string | null;
 }
 
 export interface ThreadSummary {

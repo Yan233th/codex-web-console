@@ -7,7 +7,7 @@ import { join } from 'node:path';
 import type { Cookies } from '@sveltejs/kit';
 
 const AUTH_COOKIE = 'cwc_auth';
-const DEV_FALLBACK_TOKEN = 'codex-web-console';
+const DEV_FALLBACK_TOKEN = process.env.CODEX_WEB_CONSOLE_DEV_FALLBACK_TOKEN || 'codex-web-console';
 
 function digest(value: string): string {
 	return createHash('sha256').update(value).digest('hex');

@@ -358,7 +358,8 @@ function normalizeModelOption(value: unknown): ModelOption | null {
 		supportedReasoningEfforts,
 		defaultReasoningEffort,
 		additionalSpeedTiers: readStringArray(record.additionalSpeedTiers),
-		isDefault: record.isDefault === true
+		isDefault: record.isDefault === true,
+		provider: readString(record.provider)
 	};
 }
 
@@ -366,17 +367,20 @@ function modelRuntime(selection: ModelSelection | null | undefined): {
 	model?: string;
 	effort?: ReasoningEffort;
 	serviceTier?: ServiceTier;
+	provider?: string;
 } {
 	if (!selection) return {};
 
 	const model = readString(selection.model);
 	const effort = normalizeReasoningEffort(selection.effort);
 	const serviceTier = normalizeServiceTier(selection.serviceTier);
+	const provider = readString(selection.provider);
 
 	return {
 		...(model ? { model } : {}),
 		...(effort ? { effort } : {}),
-		...(serviceTier ? { serviceTier } : {})
+		...(serviceTier ? { serviceTier } : {}),
+		...(provider ? { provider } : {})
 	};
 }
 
@@ -935,6 +939,7 @@ class LocalCodexService {
 			cwd,
 			...(model.model ? { model: model.model } : {}),
 			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
+			...(model.provider ? { provider: model.provider } : {}),
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,
@@ -1000,6 +1005,7 @@ class LocalCodexService {
 			cwd,
 			...(model.model ? { model: model.model } : {}),
 			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
+			...(model.provider ? { provider: model.provider } : {}),
 			approvalPolicy: permissions.approvalPolicy,
 			approvalsReviewer: permissions.approvalsReviewer,
 			sandbox: permissions.sandbox,

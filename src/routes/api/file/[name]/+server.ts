@@ -49,6 +49,14 @@ export const GET = async ({ locals, url, params }) => {
 		? normalizedPath
 		: path.resolve(normalizedCwd || process.cwd(), normalizedPath);
 
+	// Security: prevent path traversal
+	const safeRoot = path.resolve(normalizedCwd || process.cwd());
+	const resolvedPath = path.resolve(resolved);
+	if (!resolvedPath.startsWith(safeRoot + path.sep) && resolvedPath !== safeRoot) {
+		return new Response(null, { status: 403 });
+	}
+
+
 	try {
 		const info = await stat(resolved);
 		if (!info.isFile()) {

@@ -118,6 +118,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let threadMutationPending = $state(false);
 	let models = $state<ModelOption[]>([]);
 	let modelsLoaded = $state(false);
+	let customModels = $state<ModelOption[]>([]);
+	let customModelInput = $state('');
 	let selectedModelId = $state('gpt-5.5');
 	let reasoningEffort = $state<ReasoningEffort>('high');
 	let serviceTier = $state<ServiceTier | null>(null);
@@ -221,7 +223,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	const selectedPermission = $derived(
 		permissionOptions.find((option) => option.mode === permissionMode) ?? permissionOptions[0]
 	);
-	const availableModels = $derived(models.length > 0 ? models : fallbackModels);
+	const availableModels = $derived.by(() => {
+		const base = models.length > 0 ? models : fallbackModels;
+		return [...base, ...customModels.filter(c => !base.some(m => m.id === c.id))];
+	})
 	const selectedModel = $derived.by(() => {
 		return (
 			availableModels.find((model) => model.id === selectedModelId || model.model === selectedModelId) ??
@@ -391,6 +396,13 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		const savedModel = localStorage.getItem('modelSelection.model');
 		const savedEffort = localStorage.getItem('modelSelection.effort') as ReasoningEffort | null;
 		const savedTier = localStorage.getItem('modelSelection.serviceTier') as ServiceTier | null;
+				const savedCustomModels = localStorage.getItem('customModels');
+				if (savedCustomModels) {
+					try {
+						const parsed = JSON.parse(savedCustomModels);
+						if (Array.isArray(parsed)) customModels = parsed;
+					} catch {}
+				}
 		if (savedModel) selectedModelId = savedModel;
 		if (isReasoningEffort(savedEffort)) reasoningEffort = savedEffort;
 		serviceTier = savedTier === 'fast' || savedTier === 'flex' ? savedTier : null;
@@ -520,6 +532,29 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			effort: reasoningEffort,
 			serviceTier
 		};
+	}
+
+	function addCustomModel() {
+		const name = customModelInput.trim();
+		if (!name) return;
+		const id = "custom-" + name;
+		const existing = customModels.find(c => c.id === id);
+		if (existing) { selectModel(existing); customModelInput = ""; return; }
+		const newModel: ModelOption = {
+			id,
+			model: name,
+			displayName: name,
+			description: "Custom model",
+			hidden: false,
+			supportedReasoningEfforts: ["none","low","medium","high"],
+			defaultReasoningEffort: "medium",
+			additionalSpeedTiers: [],
+			isDefault: false
+		};
+		customModels = [...customModels, newModel];
+		selectModel(newModel);
+		customModelInput = "";
+		localStorage.setItem("customModels", JSON.stringify(customModels));
 	}
 
 	function modelShortName(model: ModelOption): string {
@@ -1973,6 +2008,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 							>
 								<span class="model-option-copy">
 									<span>{model.displayName}</span>
+									{#if model.provider}<span class='model-trigger-provider'>{model.provider}</span>{/if}
 									<small>{model.description}</small>
 								</span>
 								{#if selectedModel.id === model.id}
@@ -1982,6 +2018,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 								{/if}
 							</button>
 						{/each}
+					</div>
+					<div class="custom-model-row">
+						<input type="text" class="custom-model-input" bind:value={customModelInput} placeholder="Custom model..." />
+						<button class="custom-model-add" disabled={!customModelInput.trim()} onclick={() => { addCustomModel(); }}>Add</button>
 					</div>
 				{/if}
 				<button
