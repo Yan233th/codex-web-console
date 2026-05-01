@@ -6,6 +6,11 @@ import type {
 	ApprovalRequest,
 	ConsoleEvent,
 	DirectoryListing,
+	ModelOption,
+	ModelSelection,
+	PermissionMode,
+	ReasoningEffort,
+	ServiceTier,
 	ThreadDetail,
 	ThreadSummary,
 	TimelineEntry,
@@ -47,6 +52,12 @@ type ThreadRecord = {
 	turns: Array<{
 		id: string;
 		status: string;
+		error?: unknown;
+		errorMessage?: unknown;
+		failure?: unknown;
+		failureReason?: unknown;
+		lastError?: unknown;
+		message?: unknown;
 		startedAt: number | null;
 		completedAt: number | null;
 		durationMs: number | null;
@@ -59,7 +70,46 @@ type PendingApproval = ApprovalRequest & {
 	params: Record<string, unknown>;
 };
 
+type ReadThreadOptions = {
+	tailTurns?: number | null;
+};
+
+type ApprovalPolicy = 'on-request' | 'on-failure' | 'never';
+type SandboxName = 'workspace-write' | 'danger-full-access';
+type ApprovalsReviewer = 'user' | 'auto_review';
+
 const REQUEST_TIMEOUT_MS = 30_000;
+const DIAGNOSTIC_PREVIEW_LIMIT = 800;
+const EVENT_BACKLOG_LIMIT = 5_000;
+const THREAD_READ_RETRY_DELAYS_MS = [100, 250, 500, 1_000];
+
+export type SequencedConsoleEvent = {
+	id: number;
+	event: ConsoleEvent;
+};
+
+function stripTerminalControls(value: string): string {
+	return value
+		.replace(/\x1b\[[0-9;?]*[ -/]*[@-~]/g, '')
+		.replace(/\x1b\][^\x07]*(?:\x07|\x1b\\)/g, '')
+		.replace(/[\u0000-\u0008\u000b\u000c\u000e-\u001f\u007f]/g, '');
+}
+
+function diagnosticPreview(value: string): string {
+	const sanitized = stripTerminalControls(value).trim();
+	return sanitized.length > DIAGNOSTIC_PREVIEW_LIMIT
+		? `${sanitized.slice(0, DIAGNOSTIC_PREVIEW_LIMIT)}...`
+		: sanitized;
+}
+
+function delay(ms: number): Promise<void> {
+	return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+function isTransientThreadReadError(error: unknown): boolean {
+	const message = error instanceof Error ? error.message : String(error);
+	return /failed to read thread/i.test(message) && /rollout\b.*\bis empty/i.test(message);
+}
 
 function asRecord(value: unknown): Record<string, unknown> | null {
 	return value && typeof value === 'object' ? (value as Record<string, unknown>) : null;
@@ -67,6 +117,67 @@ function asRecord(value: unknown): Record<string, unknown> | null {
 
 function readString(value: unknown): string | null {
 	return typeof value === 'string' && value.trim() ? value.trim() : null;
+}
+
+function readCommand(value: unknown): string | null {
+	return readString(value) ??
+		(Array.isArray(value)
+			? value.filter((entry): entry is string => typeof entry === 'string').join(' ')
+			: null);
+}
+
+function readJsonText(value: unknown): string | null {
+	const text = readString(value);
+	if (text !== null) return text;
+	if (value === null || value === undefined) return null;
+
+	try {
+		return JSON.stringify(value, null, 2);
+	} catch {
+		return null;
+	}
+}
+
+function readErrorText(value: unknown): string | null {
+	const text = readString(value);
+	if (text !== null) return text;
+
+	const record = asRecord(value);
+	if (record) {
+		return (
+			readString(record.message) ??
+			readString(record.error) ??
+			readString(record.reason) ??
+			readString(record.detail) ??
+			readJsonText(record)
+		);
+	}
+
+	return readJsonText(value);
+}
+
+function readNumber(value: unknown): number | null {
+	return typeof value === 'number' && Number.isFinite(value) ? value : null;
+}
+
+function readStringArray(value: unknown): string[] {
+	return Array.isArray(value) ? value.filter((entry): entry is string => typeof entry === 'string') : [];
+}
+
+function pushUniqueImage(images: string[], image: string | null): void {
+	if (!image || images.includes(image)) return;
+	images.push(image);
+}
+
+function dataImageFromBase64(value: string, mediaType = 'image/png'): string | null {
+	const trimmed = value.trim();
+	if (!trimmed) return null;
+	if (trimmed.startsWith('data:image/')) return trimmed;
+	if (/^https?:\/\//i.test(trimmed)) return trimmed;
+	if (/^[A-Za-z0-9+/]+={0,2}$/.test(trimmed) && trimmed.length > 80) {
+		return `data:${mediaType};base64,${trimmed}`;
+	}
+	return null;
 }
 
 function normalizeThreadStatus(status: ThreadStatus): string {
@@ -85,6 +196,117 @@ function normalizeTimestamp(value: number | null | undefined): number | null {
 	return value < 10_000_000_000 ? value * 1000 : value;
 }
 
+function prettifyItemType(type: string): string {
+	return type
+		.replace(/([a-z0-9])([A-Z])/g, '$1 $2')
+		.replace(/[_-]+/g, ' ')
+		.replace(/\s+/g, ' ')
+		.trim()
+		.replace(/^\w/, (char) => char.toUpperCase());
+}
+
+function normalizeToolCall(item: ThreadItem): TimelineEntry {
+	const tool = asRecord(item.tool);
+	const server = asRecord(item.server);
+	const input =
+		readJsonText(item.arguments) ??
+		readJsonText(item.args) ??
+		readJsonText(item.input) ??
+		readJsonText(item.params);
+	const output =
+		readJsonText(item.result) ??
+		readJsonText(item.output) ??
+		readJsonText(item.error);
+	const toolName =
+		readString(item.toolName) ??
+		readString(item.name) ??
+		readString(item.functionName) ??
+		readString(tool?.name) ??
+		prettifyItemType(item.type);
+	const serverName =
+		readString(item.serverName) ??
+		readString(item.mcpServerName) ??
+		readString(server?.name) ??
+		readString(item.server);
+
+	// Extract images from tool result content blocks
+	const resultContent = asRecord(item.result)?.content ?? item.result;
+	const images = Array.isArray(resultContent) ? readImageUrls(resultContent) : readImageUrlsDeep({ result: resultContent });
+
+	return {
+		id: item.id,
+		kind: 'tool_call',
+		label: 'Tool call',
+		toolName,
+		serverName: serverName ?? undefined,
+		toolInput: input ?? undefined,
+		toolOutput: output ?? undefined,
+		status: readString(item.status),
+		startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+		completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+		durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms),
+		...(images.length > 0 ? { images } : {})
+	};
+}
+
+function readThreadId(params: Record<string, unknown>): string | null {
+	return readString(params.threadId) ?? readString(asRecord(params.thread)?.id);
+}
+
+function readTurnId(params: Record<string, unknown>): string | null {
+	return readString(params.turnId) ?? readString(asRecord(params.turn)?.id);
+}
+
+function readItemId(params: Record<string, unknown>): string | null {
+	return readString(params.itemId) ?? readString(asRecord(params.item)?.id);
+}
+
+function normalizeCommandExecutionEvent(
+	itemId: string,
+	params: Record<string, unknown>,
+	fallbackStatus: string
+): TimelineEntry {
+	const item = asRecord(params.item);
+	if (item?.type === 'commandExecution') {
+		const normalized = normalizeTimelineEntry({
+			...item,
+			id: readString(item.id) ?? itemId,
+			type: 'commandExecution'
+		});
+		if (normalized.kind === 'command') {
+			normalized.status ??= fallbackStatus;
+			if (fallbackStatus === 'completed' || fallbackStatus === 'finished') {
+				normalized.completedAt ??= Date.now();
+			}
+		}
+		return normalized;
+	}
+
+	const output = readString(params.aggregatedOutput) ?? readString(params.output);
+	const startedAt = normalizeTimestamp(readNumber(params.startedAt) ?? readNumber(params.started_at));
+	const completedAt =
+		normalizeTimestamp(readNumber(params.completedAt) ?? readNumber(params.completed_at)) ??
+		(fallbackStatus === 'completed' || fallbackStatus === 'finished' ? Date.now() : null);
+	const entry: TimelineEntry = {
+		id: itemId,
+		kind: 'command',
+		label: 'Command',
+		command: readCommand(params.command) ?? '',
+		cwd: readString(params.cwd) ?? '',
+		exitCode: readNumber(params.exitCode),
+		status: readString(params.status) ?? fallbackStatus,
+		startedAt: startedAt ?? (fallbackStatus === 'running' ? Date.now() : null),
+		completedAt,
+		durationMs: readNumber(params.durationMs) ?? readNumber(params.duration_ms)
+	};
+
+	if (output !== null) {
+		entry.output = output;
+	}
+
+	return entry;
+}
+
 function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
 	return {
 		id: thread.id,
@@ -97,29 +319,187 @@ function normalizeThreadSummary(thread: ThreadRecord): ThreadSummary {
 	};
 }
 
+function normalizeReasoningEffort(value: unknown): ReasoningEffort | null {
+	return value === 'none' ||
+		value === 'minimal' ||
+		value === 'low' ||
+		value === 'medium' ||
+		value === 'high' ||
+		value === 'xhigh'
+		? value
+		: null;
+}
+
+function normalizeServiceTier(value: unknown): ServiceTier | null {
+	return value === 'fast' || value === 'flex' ? value : null;
+}
+
+function normalizeModelOption(value: unknown): ModelOption | null {
+	const record = asRecord(value);
+	if (!record) return null;
+
+	const model = readString(record.model) ?? readString(record.id);
+	if (!model) return null;
+
+	const supportedReasoningEfforts = (
+		Array.isArray(record.supportedReasoningEfforts) ? record.supportedReasoningEfforts : []
+	)
+		.map((entry) => normalizeReasoningEffort(asRecord(entry)?.reasoningEffort ?? asRecord(entry)?.effort ?? entry))
+		.filter((entry): entry is ReasoningEffort => entry !== null);
+	const defaultReasoningEffort =
+		normalizeReasoningEffort(record.defaultReasoningEffort) ?? supportedReasoningEfforts[0] ?? 'medium';
+
+	return {
+		id: readString(record.id) ?? model,
+		model,
+		displayName: readString(record.displayName) ?? model,
+		description: readString(record.description) ?? '',
+		hidden: record.hidden === true,
+		supportedReasoningEfforts,
+		defaultReasoningEffort,
+		additionalSpeedTiers: readStringArray(record.additionalSpeedTiers),
+		isDefault: record.isDefault === true,
+		provider: readString(record.provider)
+	};
+}
+
+function modelRuntime(selection: ModelSelection | null | undefined): {
+	model?: string;
+	effort?: ReasoningEffort;
+	serviceTier?: ServiceTier;
+	provider?: string;
+} {
+	if (!selection) return {};
+
+	const model = readString(selection.model);
+	const effort = normalizeReasoningEffort(selection.effort);
+	const serviceTier = normalizeServiceTier(selection.serviceTier);
+	const provider = readString(selection.provider);
+
+	return {
+		...(model ? { model } : {}),
+		...(effort ? { effort } : {}),
+		...(serviceTier ? { serviceTier } : {}),
+		...(provider ? { provider } : {})
+	};
+}
+
+function readImageUrls(contentParts: unknown[]): string[] {
+	const images: string[] = [];
+	for (const part of contentParts) {
+		const entry = asRecord(part);
+		if (!entry) continue;
+
+		// OpenAI-style: { type: "image_url", image_url: { url: "data:..." } }
+		if (entry.type === 'image_url') {
+			const imageObj = asRecord(entry.image_url);
+			const url = readString(imageObj?.url);
+			if (url) images.push(url);
+			continue;
+		}
+
+		// Anthropic-style: { type: "image", source: { type: "base64", media_type: "...", data: "..." } }
+		// or flat style: { type: "image", media_type: "...", data: "..." }
+		// or url style: { type: "image", url: "..." }
+		if (entry.type === 'image') {
+			const url = readString(entry.url);
+			if (url) { images.push(url); continue; }
+
+			const source = asRecord(entry.source);
+			if (source) {
+				if (source.type === 'base64') {
+					const mediaType = readString(source.media_type) ?? 'image/png';
+					const data = readString(source.data);
+					if (data) { images.push(`data:${mediaType};base64,${data}`); continue; }
+				}
+				const sourceUrl = readString(source.url);
+				if (sourceUrl) { images.push(sourceUrl); continue; }
+			}
+
+			if (typeof entry.data === 'string' && entry.data) {
+				const mediaType = readString(entry.media_type) ?? 'image/png';
+				images.push(`data:${mediaType};base64,${entry.data}`);
+			}
+		}
+	}
+	return images;
+}
+
+function readImageUrlsDeep(value: unknown): string[] {
+	const images: string[] = [];
+
+	function visit(current: unknown, key = ''): void {
+		if (Array.isArray(current)) {
+			for (const part of current) visit(part, key);
+			return;
+		}
+
+		const record = asRecord(current);
+		if (!record) {
+			if (typeof current === 'string') {
+				const image = dataImageFromBase64(current);
+				if (image && ['result', 'b64_json', 'image', 'data'].includes(key)) {
+					pushUniqueImage(images, image);
+				}
+			}
+			return;
+		}
+
+		for (const image of readImageUrls([record])) {
+			pushUniqueImage(images, image);
+		}
+
+		const mediaType = readString(record.media_type) ?? readString(record.mime_type) ?? 'image/png';
+		const imageUrl = asRecord(record.image_url);
+		pushUniqueImage(images, readString(imageUrl?.url));
+
+		for (const keyName of ['result', 'b64_json', 'image', 'data']) {
+			const direct = record[keyName];
+			if (typeof direct === 'string') {
+				pushUniqueImage(images, dataImageFromBase64(direct, mediaType));
+			}
+		}
+
+		for (const [childKey, child] of Object.entries(record)) {
+			if (childKey === 'url' || childKey === 'image_url') continue;
+			visit(child, childKey);
+		}
+	}
+
+	visit(value);
+	return images;
+}
+
 function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 	switch (item.type) {
-		case 'userMessage':
+		case 'userMessage': {
+			const contentParts = Array.isArray(item.content) ? item.content : [];
+			const images = readImageUrls(contentParts);
 			return {
 				id: item.id,
 				kind: 'user',
 				label: 'You',
-				text: (Array.isArray(item.content) ? item.content : [])
+				text: contentParts
 					.map((part) => {
 						const entry = asRecord(part);
 						return entry && entry.type === 'text' && typeof entry.text === 'string' ? entry.text : '';
 					})
 					.filter((value): value is string => Boolean(value))
-					.join('\n')
+					.join('\n'),
+				...(images.length > 0 ? { images } : {})
 			};
-		case 'agentMessage':
+		}
+		case 'agentMessage': {
+			const assistantImages = Array.isArray(item.content) ? readImageUrls(item.content) : [];
 			return {
 				id: item.id,
 				kind: 'assistant',
 				label: item.phase === 'commentary' ? 'Assistant commentary' : 'Assistant',
 				text: readString(item.text) ?? '',
-				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null
+				phase: item.phase === 'commentary' || item.phase === 'final_answer' ? item.phase : null,
+				...(assistantImages.length > 0 ? { images: assistantImages } : {})
 			};
+		}
 		case 'reasoning': {
 			const reasoningText = [
 				...(Array.isArray(item.summary)
@@ -158,6 +538,33 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 					queries.join('\n')
 			};
 		}
+		case 'mcpToolCall':
+		case 'mcp_tool_call':
+		case 'mcp-tool-call':
+		case 'toolCall':
+		case 'tool_call':
+		case 'function_call':
+		case 'functionCall':
+			return normalizeToolCall(item);
+		case 'imageGeneration':
+		case 'image_generation':
+		case 'image-generation':
+		case 'imageGenerationCall':
+		case 'image_generation_call':
+		case 'image-generation-call': {
+			const images = readImageUrlsDeep(item);
+			return {
+				id: item.id,
+				kind: 'assistant',
+				label: 'Image generation',
+				text: readString(item.text) ?? readString(item.prompt) ?? '',
+				status: readString(item.status),
+				startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+				completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+				durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms),
+				...(images.length > 0 ? { images } : {})
+			};
+		}
 		case 'commandExecution':
 			return {
 				id: item.id,
@@ -166,9 +573,11 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 				command: readString(item.command) ?? '',
 				cwd: readString(item.cwd) ?? '',
 				output: readString(item.aggregatedOutput) ?? '',
-				exitCode: typeof item.exitCode === 'number' ? item.exitCode : null,
+				exitCode: readNumber(item.exitCode),
 				status: readString(item.status),
-				durationMs: typeof item.durationMs === 'number' ? item.durationMs : null
+				startedAt: normalizeTimestamp(readNumber(item.startedAt) ?? readNumber(item.started_at)),
+				completedAt: normalizeTimestamp(readNumber(item.completedAt) ?? readNumber(item.completed_at)),
+				durationMs: readNumber(item.durationMs) ?? readNumber(item.duration_ms)
 			};
 		case 'fileChange':
 			return {
@@ -209,15 +618,32 @@ function normalizeTimelineEntry(item: ThreadItem): TimelineEntry {
 			return {
 				id: item.id,
 				kind: 'system',
-				label: item.type
+				label: prettifyItemType(item.type)
 			};
 	}
 }
 
-function normalizeThreadDetail(thread: ThreadRecord, approvals: ApprovalRequest[]): ThreadDetail {
-	const turns: TimelineTurn[] = thread.turns.map((turn) => ({
+function normalizeThreadDetail(
+	thread: ThreadRecord,
+	approvals: ApprovalRequest[],
+	options: ReadThreadOptions = {}
+): ThreadDetail {
+	const tailTurns =
+		typeof options.tailTurns === 'number' && Number.isFinite(options.tailTurns) && options.tailTurns > 0
+			? Math.floor(options.tailTurns)
+			: null;
+	const omittedTurnCount = tailTurns ? Math.max(0, thread.turns.length - tailTurns) : 0;
+	const sourceTurns = omittedTurnCount > 0 ? thread.turns.slice(omittedTurnCount) : thread.turns;
+	const turns: TimelineTurn[] = sourceTurns.map((turn) => ({
 		id: turn.id,
 		status: turn.status,
+		errorMessage:
+			readErrorText(turn.error) ??
+			readErrorText(turn.errorMessage) ??
+			readErrorText(turn.failureReason) ??
+			readErrorText(turn.failure) ??
+			readErrorText(turn.lastError) ??
+			readErrorText(turn.message),
 		startedAt: turn.startedAt,
 		completedAt: turn.completedAt,
 		durationMs: turn.durationMs,
@@ -227,7 +653,8 @@ function normalizeThreadDetail(thread: ThreadRecord, approvals: ApprovalRequest[
 	return {
 		thread: normalizeThreadSummary(thread),
 		turns,
-		approvals
+		approvals,
+		omittedTurnCount
 	};
 }
 
@@ -242,6 +669,41 @@ function buildWorkspaceWritePolicy(cwd: string) {
 		excludeTmpdirEnvVar: false,
 		excludeSlashTmp: false
 	};
+}
+
+function normalizePermissionMode(mode: PermissionMode | null | undefined): PermissionMode {
+	return mode === 'auto' || mode === 'full' ? mode : 'default';
+}
+
+function permissionRuntime(cwd: string, mode: PermissionMode | null | undefined): {
+	approvalPolicy: ApprovalPolicy;
+	approvalsReviewer: ApprovalsReviewer;
+	sandbox: SandboxName;
+	sandboxPolicy: Record<string, unknown>;
+} {
+	switch (normalizePermissionMode(mode)) {
+		case 'auto':
+			return {
+				approvalPolicy: 'on-request',
+				approvalsReviewer: 'auto_review',
+				sandbox: 'workspace-write',
+				sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			};
+		case 'full':
+			return {
+				approvalPolicy: 'never',
+				approvalsReviewer: 'user',
+				sandbox: 'danger-full-access',
+				sandboxPolicy: { type: 'dangerFullAccess' }
+			};
+		default:
+			return {
+				approvalPolicy: 'on-request',
+				approvalsReviewer: 'user',
+				sandbox: 'workspace-write',
+				sandboxPolicy: buildWorkspaceWritePolicy(cwd)
+			};
+	}
 }
 
 function approvalTitle(method: string): string {
@@ -273,11 +735,7 @@ function serializeApproval(
 		return null;
 	}
 
-	const command =
-		readString(params.command) ||
-		(Array.isArray(params.command)
-			? params.command.filter((value): value is string => typeof value === 'string').join(' ')
-			: null);
+	const command = readCommand(params.command);
 
 	return {
 		requestId: String(rpcId),
@@ -290,8 +748,17 @@ function serializeApproval(
 		command,
 		cwd: readString(params.cwd),
 		grantRoot: readString(params.grantRoot),
+		requestedAt: Date.now(),
 		params
 	};
+}
+
+function buildImageInput(images?: string[]): Array<Record<string, unknown>> {
+	if (!images || images.length === 0) return [];
+	return images.map((dataUri) => ({
+		type: 'image',
+		url: dataUri
+	}));
 }
 
 class LocalCodexService {
@@ -307,14 +774,54 @@ class LocalCodexService {
 			timeout: ReturnType<typeof setTimeout>;
 		}
 	>();
-	private listeners = new Set<(event: ConsoleEvent) => void>();
+	private listeners = new Set<(event: ConsoleEvent, id: number) => void>();
+	private eventBacklog: SequencedConsoleEvent[] = [];
+	private eventSequence = 0;
 	private pendingApprovals = new Map<string, PendingApproval>();
+	private listThreadsInFlight: Promise<ThreadSummary[]> | null = null;
+	private readThreadInFlight = new Map<string, Promise<ThreadDetail>>();
 
-	subscribe(listener: (event: ConsoleEvent) => void): () => void {
+	subscribe(listener: (event: ConsoleEvent, id: number) => void): () => void {
 		this.listeners.add(listener);
 		return () => {
 			this.listeners.delete(listener);
 		};
+	}
+
+	getLatestEventId(): number {
+		return this.eventSequence;
+	}
+
+	getEventsSince(id: number): SequencedConsoleEvent[] {
+		return this.eventBacklog.filter((entry) => entry.id > id);
+	}
+
+	waitForEvents(id: number, timeoutMs: number, signal?: AbortSignal): Promise<SequencedConsoleEvent[]> {
+		const pending = this.getEventsSince(id);
+		if (pending.length > 0 || signal?.aborted) {
+			return Promise.resolve(pending);
+		}
+
+		return new Promise((resolve) => {
+			let done = false;
+			let unsubscribe = () => {};
+			let timeout: ReturnType<typeof setTimeout> | null = null;
+
+			const finish = () => {
+				if (done) return;
+				done = true;
+				unsubscribe();
+				if (timeout !== null) clearTimeout(timeout);
+				signal?.removeEventListener('abort', finish);
+				resolve(this.getEventsSince(id));
+			};
+
+			unsubscribe = this.subscribe((_event, eventId) => {
+				if (eventId > id) finish();
+			});
+			timeout = setTimeout(finish, timeoutMs);
+			signal?.addEventListener('abort', finish, { once: true });
+		});
 	}
 
 	getPendingApprovals(threadId: string): ApprovalRequest[] {
@@ -324,78 +831,191 @@ class LocalCodexService {
 	}
 
 	async listThreads(): Promise<ThreadSummary[]> {
-		await this.ensureStarted();
-		const response = (await this.request('thread/list', {
-			limit: 50,
-			archived: false,
-			modelProviders: [],
-			sortKey: 'updated_at',
-			sortDirection: 'desc'
-		})) as { data: ThreadRecord[] };
+		if (this.listThreadsInFlight) {
+			return this.listThreadsInFlight;
+		}
 
-		return response.data.map(normalizeThreadSummary);
+		const promise = (async () => {
+			await this.ensureStarted();
+			const response = (await this.request('thread/list', {
+				limit: 50,
+				archived: false,
+				modelProviders: [],
+				sortKey: 'updated_at',
+				sortDirection: 'desc'
+			})) as { data: ThreadRecord[] };
+			return response.data.map(normalizeThreadSummary);
+		})();
+
+		this.listThreadsInFlight = promise;
+		promise.catch(() => {}).finally(() => { this.listThreadsInFlight = null; });
+		return promise;
 	}
 
-	async readThread(threadId: string): Promise<ThreadDetail> {
+	async listModels(): Promise<ModelOption[]> {
 		await this.ensureStarted();
-		const response = (await this.request('thread/read', {
+		const response = (await this.request('model/list', {
+			limit: 100,
+			includeHidden: false
+		})) as { data: unknown[] };
+
+		return (Array.isArray(response.data) ? response.data : [])
+			.map(normalizeModelOption)
+			.filter((model): model is ModelOption => model !== null);
+	}
+
+	async readThread(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
+		const coalescingKey = `${threadId}:${options.tailTurns ?? 'full'}`;
+		const inFlight = this.readThreadInFlight.get(coalescingKey);
+		if (inFlight) {
+			return inFlight;
+		}
+
+		const promise = this._readThreadInternal(threadId, options);
+		this.readThreadInFlight.set(coalescingKey, promise);
+		promise.catch(() => {}).finally(() => { this.readThreadInFlight.delete(coalescingKey); });
+		return promise;
+	}
+
+	private async _readThreadInternal(threadId: string, options: ReadThreadOptions = {}): Promise<ThreadDetail> {
+		await this.ensureStarted();
+		let response: { thread: ThreadRecord } | null = null;
+		let lastError: unknown = null;
+
+		for (let attempt = 0; attempt <= THREAD_READ_RETRY_DELAYS_MS.length; attempt += 1) {
+			try {
+				response = (await this.request('thread/read', {
+					threadId,
+					includeTurns: true
+				})) as { thread: ThreadRecord };
+				break;
+			} catch (error) {
+				if (!isTransientThreadReadError(error) || attempt === THREAD_READ_RETRY_DELAYS_MS.length) {
+					throw error;
+				}
+
+				lastError = error;
+				await delay(THREAD_READ_RETRY_DELAYS_MS[attempt]);
+			}
+		}
+
+		if (!response) {
+			throw lastError instanceof Error ? lastError : new Error(String(lastError));
+		}
+
+		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId), options);
+	}
+
+	async renameThread(threadId: string, name: string): Promise<ThreadSummary> {
+		await this.ensureStarted();
+		await this.request('thread/name/set', {
 			threadId,
-			includeTurns: true
-		})) as { thread: ThreadRecord };
-
-		return normalizeThreadDetail(response.thread, this.getPendingApprovals(threadId));
+			name
+		});
+		const detail = await this.readThread(threadId, { tailTurns: 1 });
+		return detail.thread;
 	}
 
-	async createThread(cwd: string, prompt: string): Promise<ThreadSummary> {
+	async archiveThread(threadId: string): Promise<void> {
 		await this.ensureStarted();
+		await this.request('thread/archive', {
+			threadId
+		});
+	}
+
+	async createThread(
+		cwd: string,
+		prompt: string,
+		permissionMode?: PermissionMode,
+		modelSelection?: ModelSelection,
+		images?: string[]
+	): Promise<ThreadSummary> {
+		await this.ensureStarted();
+
+		const permissions = permissionRuntime(cwd, permissionMode);
+		const model = modelRuntime(modelSelection);
 
 		const response = (await this.request('thread/start', {
 			cwd,
-			approvalPolicy: 'on-request',
-			sandbox: 'workspace-write',
+			...(model.model ? { model: model.model } : {}),
+			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
+			...(model.provider ? { provider: model.provider } : {}),
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandbox: permissions.sandbox,
 			experimentalRawEvents: false,
 			persistExtendedHistory: true
 		})) as { thread: ThreadRecord };
 
-		await this.request('turn/start', {
+		const input: Array<Record<string, unknown>> = [
+			...buildImageInput(images),
+			{
+				type: 'text',
+				text: prompt,
+				text_elements: []
+			}
+		];
+
+		this.enqueueRequest('turn/start', {
 			threadId: response.thread.id,
-			input: [
-				{
-					type: 'text',
-					text: prompt,
-					text_elements: []
-				}
-			],
-			approvalPolicy: 'on-request',
-			sandboxPolicy: buildWorkspaceWritePolicy(cwd)
-		});
+			input,
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandboxPolicy: permissions.sandboxPolicy,
+			...model
+		}, 'Failed to start turn');
 
 		return normalizeThreadSummary(response.thread);
 	}
 
-	async sendMessage(threadId: string, cwd: string, prompt: string): Promise<void> {
+	async sendMessage(
+		threadId: string,
+		cwd: string,
+		prompt: string,
+		permissionMode?: PermissionMode,
+		modelSelection?: ModelSelection,
+		images?: string[]
+	): Promise<void> {
 		await this.ensureStarted();
-		await this.request('thread/resume', {
-			threadId,
-			cwd,
-			approvalPolicy: 'on-request',
-			sandbox: 'workspace-write',
-			persistExtendedHistory: true
-		});
 
-		await this.request('turn/start', {
+		const permissions = permissionRuntime(cwd, permissionMode);
+		const model = modelRuntime(modelSelection);
+
+		const input: Array<Record<string, unknown>> = [
+			...buildImageInput(images),
+			{
+				type: 'text',
+				text: prompt,
+				text_elements: []
+			}
+		];
+
+		const turnStartParams = {
 			threadId,
-			input: [
-				{
-					type: 'text',
-					text: prompt,
-					text_elements: []
-				}
-			],
+			input,
 			cwd,
-			approvalPolicy: 'on-request',
-			sandboxPolicy: buildWorkspaceWritePolicy(cwd)
-		});
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandboxPolicy: permissions.sandboxPolicy,
+			...model
+		};
+
+		void this.request('thread/resume', {
+			threadId,
+			cwd,
+			...(model.model ? { model: model.model } : {}),
+			...(model.serviceTier ? { serviceTier: model.serviceTier } : {}),
+			...(model.provider ? { provider: model.provider } : {}),
+			approvalPolicy: permissions.approvalPolicy,
+			approvalsReviewer: permissions.approvalsReviewer,
+			sandbox: permissions.sandbox,
+			persistExtendedHistory: true
+		})
+			.then(() => this.request('turn/start', turnStartParams))
+			.catch((error) => {
+				const message = error instanceof Error ? error.message : String(error);
+				this.emit({ type: 'error', message: `Failed to send message: ${message}` });
+			});
 	}
 
 	async interruptTurn(threadId: string, turnId: string): Promise<void> {
@@ -486,7 +1106,8 @@ class LocalCodexService {
 	private async start(): Promise<void> {
 		this.process = spawn('codex', ['app-server', '--listen', 'stdio://'], {
 			stdio: 'pipe',
-			env: process.env
+			env: process.env,
+			shell: process.platform === 'win32'
 		});
 
 		this.process.stdout.on('data', (chunk: Buffer) => {
@@ -500,9 +1121,9 @@ class LocalCodexService {
 		});
 
 		this.process.stderr.on('data', (chunk: Buffer) => {
-			const message = chunk.toString('utf8').trim();
+			const message = diagnosticPreview(chunk.toString('utf8'));
 			if (message) {
-				this.emit({ type: 'error', message });
+				console.warn(`[codex app-server] ${message}`);
 			}
 		});
 
@@ -551,6 +1172,13 @@ class LocalCodexService {
 		});
 	}
 
+	private enqueueRequest(method: string, params: unknown, failurePrefix: string): void {
+		void this.request(method, params).catch((error) => {
+			const message = error instanceof Error ? error.message : String(error);
+			this.emit({ type: 'error', message: `${failurePrefix}: ${message}` });
+		});
+	}
+
 	private notify(method: string, params?: unknown): void {
 		this.write({ method, params });
 	}
@@ -582,7 +1210,7 @@ class LocalCodexService {
 		try {
 			message = JSON.parse(trimmed) as JsonRpcResponse | JsonRpcNotification;
 		} catch {
-			this.emit({ type: 'error', message: trimmed });
+			this.emit({ type: 'error', message: `Unexpected app-server output: ${diagnosticPreview(trimmed)}` });
 			return;
 		}
 
@@ -645,7 +1273,8 @@ class LocalCodexService {
 					reason: approval.reason,
 					command: approval.command,
 					cwd: approval.cwd,
-					grantRoot: approval.grantRoot
+					grantRoot: approval.grantRoot,
+					requestedAt: approval.requestedAt
 				}
 			});
 			return;
@@ -666,8 +1295,8 @@ class LocalCodexService {
 		}
 
 		if (method === 'turn/started' || method === 'turn/completed') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(asRecord(safeParams.turn)?.id);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
 			if (threadId && turnId) {
 				this.emit({
 					type: method === 'turn/started' ? 'turn.started' : 'turn.completed',
@@ -679,9 +1308,9 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/agentMessage/delta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'message.delta', threadId, turnId, itemId, delta });
@@ -690,9 +1319,9 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/reasoning/summaryTextDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'reasoning.delta', threadId, turnId, itemId, delta });
@@ -701,20 +1330,50 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/commandExecution/outputDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
-				this.emit({ type: 'command.delta', threadId, turnId, itemId, delta });
+				this.emit({
+					type: 'command.delta',
+					threadId,
+					turnId,
+					itemId,
+					delta,
+					item: normalizeCommandExecutionEvent(itemId, safeParams, 'running')
+				});
+			}
+			return;
+		}
+
+		if (
+			method === 'item/commandExecution/started' ||
+			method === 'item/commandExecution/completed' ||
+			method === 'item/commandExecution/finished'
+		) {
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
+
+			if (threadId && turnId && itemId) {
+				const completed =
+					method === 'item/commandExecution/completed' ||
+					method === 'item/commandExecution/finished';
+				this.emit({
+					type: completed ? 'item.completed' : 'item.started',
+					threadId,
+					turnId,
+					item: normalizeCommandExecutionEvent(itemId, safeParams, completed ? 'completed' : 'running')
+				});
 			}
 			return;
 		}
 
 		if (method === 'item/fileChange/outputDelta') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
-			const itemId = readString(safeParams.itemId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
+			const itemId = readItemId(safeParams);
 			const delta = typeof safeParams.delta === 'string' ? safeParams.delta : '';
 			if (threadId && turnId && itemId && delta) {
 				this.emit({ type: 'file_change.delta', threadId, turnId, itemId, delta });
@@ -723,16 +1382,21 @@ class LocalCodexService {
 		}
 
 		if (method === 'item/started' || method === 'item/completed') {
-			const threadId = readString(safeParams.threadId);
-			const turnId = readString(safeParams.turnId);
+			const threadId = readThreadId(safeParams);
+			const turnId = readTurnId(safeParams);
 			const item = asRecord(safeParams.item) as ThreadItem | null;
 
 			if (threadId && turnId && item) {
+				const normalized = normalizeTimelineEntry(item);
+				if (method === 'item/completed' && (normalized.kind === 'command' || normalized.kind === 'tool_call')) {
+					normalized.status ??= 'completed';
+					normalized.completedAt ??= Date.now();
+				}
 				this.emit({
 					type: method === 'item/started' ? 'item.started' : 'item.completed',
 					threadId,
 					turnId,
-					item: normalizeTimelineEntry(item)
+					item: normalized
 				});
 			}
 			return;
@@ -761,8 +1425,14 @@ class LocalCodexService {
 	}
 
 	private emit(event: ConsoleEvent): void {
+		const id = ++this.eventSequence;
+		this.eventBacklog.push({ id, event });
+		if (this.eventBacklog.length > EVENT_BACKLOG_LIMIT) {
+			this.eventBacklog.splice(0, this.eventBacklog.length - EVENT_BACKLOG_LIMIT);
+		}
+
 		for (const listener of this.listeners) {
-			listener(event);
+			listener(event, id);
 		}
 	}
 

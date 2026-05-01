@@ -5,12 +5,16 @@
 
 	let {
 		tokenConfigured,
+		setupMode,
 		fallbackTokenActive,
-		loginError
+		loginError,
+		setupError
 	}: {
 		tokenConfigured: boolean;
+		setupMode: boolean;
 		fallbackTokenActive: boolean;
 		loginError?: string;
+		setupError?: string;
 	} = $props();
 
 	const enhanceRedirect: SubmitFunction = () => {
@@ -19,41 +23,56 @@
 				await goto(result.location, { invalidateAll: true });
 				return;
 			}
-
 			await update();
 		};
 	};
 </script>
 
-<section class="login-card">
-	<p class="eyebrow">Codex Web Console</p>
-	<h1>Enter access token</h1>
-	<p class="copy">No user system. One token. One doorway.</p>
+<section class="login-shell">
+	<div class="login-card">
+		<h1>Codex Web Console</h1>
 
-	{#if !tokenConfigured}
-		<p class="warning">
-			Set <code>CODEX_WEB_CONSOLE_TOKEN</code> before logging in.
-		</p>
-	{:else if fallbackTokenActive}
-		<p class="warning">Dev fallback token is active.</p>
-	{/if}
+		{#if setupMode}
+			<p>Set an access token to protect your console.</p>
+			<p class="warning">
+				This token will be saved locally and used for future logins.
+			</p>
 
-	<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
-		<label class="field">
-			<span>Token</span>
-			<input
-				name="token"
-				type="password"
-				autocomplete="off"
-				spellcheck="false"
-				placeholder="Paste token"
-			/>
-		</label>
+			<form method="POST" action="?/setup" class="login-form" use:enhance={enhanceRedirect}>
+				<input
+					name="token"
+					type="password"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="Enter a new access token"
+				/>
+				<button type="submit">Save &amp; Continue</button>
+			</form>
 
-		<button type="submit">Continue</button>
-	</form>
+			{#if setupError}
+				<p class="error">{setupError}</p>
+			{/if}
+		{:else}
+			<p>Enter your access token to continue.</p>
 
-	{#if loginError}
-		<p class="error">{loginError}</p>
-	{/if}
+			{#if fallbackTokenActive}
+				<p class="warning">Dev fallback token is active.</p>
+			{/if}
+
+			<form method="POST" action="?/login" class="login-form" use:enhance={enhanceRedirect}>
+				<input
+					name="token"
+					type="password"
+					autocomplete="off"
+					spellcheck="false"
+					placeholder="Paste token"
+				/>
+				<button type="submit">Continue</button>
+			</form>
+
+			{#if loginError}
+				<p class="error">{loginError}</p>
+			{/if}
+		{/if}
+	</div>
 </section>

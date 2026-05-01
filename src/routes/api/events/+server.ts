@@ -1,6 +1,8 @@
-import { error } from '@sveltejs/kit';
+import { error, json } from '@sveltejs/kit';
 
 import { codex } from '$lib/server/codex';
+
+const encoder = new TextEncoder();
 
 function requireAuth(locals: App.Locals) {
 	if (!locals.authenticated) {
@@ -8,14 +10,46 @@ function requireAuth(locals: App.Locals) {
 	}
 }
 
-export const GET = async ({ locals, request }) => {
+function readEventId(value: string | null): number {
+	if (!value) return 0;
+	const parsed = Number(value);
+	return Number.isFinite(parsed) && parsed > 0 ? Math.floor(parsed) : 0;
+}
+
+function readWaitMs(value: string | null): number {
+	if (!value) return 0;
+	const parsed = Number(value);
+	if (!Number.isFinite(parsed) || parsed <= 0) return 0;
+	return Math.min(5_000, Math.floor(parsed));
+}
+
+function encodeEvent(id: number, event: unknown): Uint8Array {
+	return encoder.encode(`id: ${id}\ndata: ${JSON.stringify(event)}\n\n`);
+}
+
+export const GET = async ({ locals, request, url }) => {
 	requireAuth(locals);
 
-	const encoder = new TextEncoder();
+	const requestedSince = url.searchParams.get('since') ?? request.headers.get('last-event-id');
+	const since = requestedSince === null ? codex.getLatestEventId() : readEventId(requestedSince);
+
+	if (url.searchParams.get('transport') === 'poll') {
+		const waitMs = readWaitMs(url.searchParams.get('wait'));
+		const events =
+			waitMs > 0
+				? await codex.waitForEvents(since, waitMs, request.signal)
+				: codex.getEventsSince(since);
+		return json(
+			{ events, latestId: codex.getLatestEventId() },
+			{ headers: { 'Cache-Control': 'no-store, no-transform' } }
+		);
+	}
 
 	const stream = new ReadableStream<Uint8Array>({
 		start(controller) {
 			let closed = false;
+			let unsubscribe = () => {};
+			let keepAlive: ReturnType<typeof setInterval> | null = null;
 
 			const close = () => {
 				if (closed) {
@@ -23,7 +57,7 @@ export const GET = async ({ locals, request }) => {
 				}
 
 				closed = true;
-				clearInterval(keepAlive);
+				if (keepAlive !== null) clearInterval(keepAlive);
 				unsubscribe();
 
 				try {
@@ -40,19 +74,28 @@ export const GET = async ({ locals, request }) => {
 				return;
 			}
 
-			const unsubscribe = codex.subscribe((event) => {
+			for (const { id, event } of codex.getEventsSince(since)) {
+				try {
+					controller.enqueue(encodeEvent(id, event));
+				} catch {
+					close();
+					return;
+				}
+			}
+
+			unsubscribe = codex.subscribe((event, id) => {
 				if (closed) {
 					return;
 				}
 
 				try {
-					controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+					controller.enqueue(encodeEvent(id, event));
 				} catch {
 					close();
 				}
 			});
 
-			const keepAlive = setInterval(() => {
+			keepAlive = setInterval(() => {
 				if (closed) {
 					return;
 				}
@@ -75,7 +118,8 @@ export const GET = async ({ locals, request }) => {
 	return new Response(stream, {
 		headers: {
 			'Content-Type': 'text/event-stream',
-			'Cache-Control': 'no-store',
+			'Cache-Control': 'no-store, no-transform',
+			'X-Accel-Buffering': 'no',
 			Connection: 'keep-alive'
 		}
 	});

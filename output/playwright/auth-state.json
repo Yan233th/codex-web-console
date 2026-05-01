@@ -1,0 +1,25 @@
+{
+  "origins": [
+    {
+      "localStorage": [
+        {
+          "name": "sidebarCollapsed",
+          "value": "true"
+        }
+      ],
+      "origin": "http://127.0.0.1:5174"
+    }
+  ],
+  "cookies": [
+    {
+      "httpOnly": true,
+      "value": "16b110b6ec2883c2a8b697ade7a7f612424c2f59a565abc460164102b5ef62e0",
+      "expires": -1,
+      "domain": "127.0.0.1",
+      "secure": false,
+      "name": "cwc_auth",
+      "path": "/",
+      "sameSite": "Lax"
+    }
+  ]
+}

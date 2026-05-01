@@ -1,6 +1,10 @@
 # codex-web-console
 
+[English](README.md) | [简体中文](README.zh-CN.md)
+
 Minimal local-first web console for Codex.
+
+Published package: https://www.npmjs.com/package/codex-web-console
 
 ## Current Scope
 
@@ -22,13 +26,37 @@ bun install
 bun run dev
 ```
 
+## Quick Start
+
+Start the console with npx:
+
+```sh
+npx codex-web-console
+```
+
+Options:
+
+```sh
+npx codex-web-console --host 127.0.0.1 --port 3000 --no-open
+```
+
+For local testing from this repository:
+
+```sh
+bun run build
+npx . --no-open
+```
+
 ## Auth
 
-Set a single access token before starting, or copy `.env.example` into your own env setup:
+Set a single access token before starting, or copy `.env.example` to `.env`:
 
 ```sh
 export CODEX_WEB_CONSOLE_TOKEN=your-token
 ```
+
+SvelteKit loads `.env` automatically in development. A value exported in your
+shell takes precedence over the same key in `.env`.
 
 The landing page accepts exactly one token and stores a signed-in cookie locally.
 
@@ -44,8 +72,39 @@ codex-web-console
 bun run build
 ```
 
+## Release
+
+CI runs on every push to `main` and every pull request:
+
+```sh
+bun run check
+bun run build
+```
+
+Package publishing is manual only.
+For `workflow_dispatch` runs, publishing is blocked by default.
+It will publish only when:
+
+- `release_now` is set to `true`
+- `release_version` is set to the exact version you want to publish
+
+For manual runs, you can choose:
+
+- `oidc`: publish via npm trusted publishing
+- `npm-token`: publish via the `NPM_TOKEN` GitHub secret as a fallback
+
+Before enabling manual token-based publishing, add this GitHub Actions secret:
+
+```text
+NPM_TOKEN
+```
+
+The npm token needs publish permission for the `codex-web-console` package.
+Manual publish will fail if the requested version already exists on npm.
+
 ## Requirements
 
+- Bun must be available in `PATH`
 - Codex must be available in `PATH`
 - The UI starts and talks to a single local `codex app-server`
 - The configured token is required outside development
