@@ -120,6 +120,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 	let modelsLoaded = $state(false);
 	let customModels = $state<ModelOption[]>([]);
 	let customModelInput = $state('');
+	let customProviderUrl = $state('');
 	let selectedModelId = $state('gpt-5.5');
 	let reasoningEffort = $state<ReasoningEffort>('high');
 	let serviceTier = $state<ServiceTier | null>(null);
@@ -403,6 +404,8 @@ import type { SubmitFunction } from '@sveltejs/kit';
 						if (Array.isArray(parsed)) customModels = parsed;
 					} catch {}
 				}
+			const savedProviderUrl = localStorage.getItem('customProviderUrl');
+			if (savedProviderUrl) customProviderUrl = savedProviderUrl;
 		if (savedModel) selectedModelId = savedModel;
 		if (isReasoningEffort(savedEffort)) reasoningEffort = savedEffort;
 		serviceTier = savedTier === 'fast' || savedTier === 'flex' ? savedTier : null;
@@ -492,6 +495,24 @@ import type { SubmitFunction } from '@sveltejs/kit';
 			if (payload.models.length > 0) models = payload.models;
 		} catch {
 			// Keep the local fallback list when an older app-server cannot list models.
+		}
+		// Also fetch from a custom provider URL if configured
+		if (customProviderUrl.trim()) {
+			try {
+				const payload = await readJson<{ models: ModelOption[] }>(
+					await fetch('/api/models', {
+						method: 'POST',
+						headers: { 'Content-Type': 'application/json' },
+						body: JSON.stringify({ url: customProviderUrl.trim() })
+					})
+				);
+				if (payload.models.length > 0) {
+					const existingIds = new Set(models.map(m => m.id));
+					models = [...models, ...payload.models.filter(m => !existingIds.has(m.id))];
+				}
+			} catch {
+				// Custom provider unavailable — silently ignore
+			}
 		}
 	}
 
@@ -961,7 +982,7 @@ import type { SubmitFunction } from '@sveltejs/kit';
 		return turn.entries.some(
 			(historical) =>
 				historical.kind === entry.kind &&
-				historical.phase === entry.phase &&
+				(entry.phase == null || historical.phase === entry.phase) &&
 				normalizedEntryContent(historical) === liveContent
 		);
 	}
@@ -2022,6 +2043,10 @@ import type { SubmitFunction } from '@sveltejs/kit';
 					<div class="custom-model-row">
 						<input type="text" class="custom-model-input" bind:value={customModelInput} placeholder="Custom model..." />
 						<button class="custom-model-add" disabled={!customModelInput.trim()} onclick={() => { addCustomModel(); }}>Add</button>
+					</div>
+					<div class="custom-model-row">
+						<input type="text" class="custom-model-input" bind:value={customProviderUrl} placeholder="Provider URL (e.g. http://127.0.0.1:9090)" />
+						<button class="custom-model-add" disabled={!customProviderUrl.trim()} onclick={() => { localStorage.setItem('customProviderUrl', customProviderUrl); void loadModels(); }}>Fetch</button>
 					</div>
 				{/if}
 				<button
